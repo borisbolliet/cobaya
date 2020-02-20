@@ -479,12 +479,8 @@ class classy(BoltzmannBase):
         return cls
 
     def get_Cl_sz(self):
-        params = self.classy.get_params_sz()
-        ell = self.classy.ell_sz()
-        cls = self.classy.cl_sz()
-        trispectrum = self.classy.tllprime_sz()
-        R = [params,ell,cls,trispectrum]
-        return R
+        cls = deepcopy(self._current_state["Cl_sz"])
+        return cls
 
 
     def _get_z_dependent(self, quantity, z):
