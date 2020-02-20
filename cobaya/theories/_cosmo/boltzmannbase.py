@@ -159,7 +159,6 @@ class BoltzmannBase(Theory):
             elif v is None:
                 self._needs[k] = None
             else:
-                print('not ok')
                 raise LoggedError(self.log, "Unknown required product: '%s'.", k)
 
     def requested(self):
