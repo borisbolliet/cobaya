@@ -104,6 +104,8 @@ class BoltzmannBase(Theory):
                 self._needs["Cl"] = {
                     cl: max(self._needs.get("Cl", {}).get(cl, 0), v.get(cl, 0))
                     for cl in set(self._needs.get("Cl", {})).union(v)}
+            elif k == "Cl_sz":
+                self._needs["Cl_sz"] = self._needs.get("Cl_sz", {})
             elif k in ["Pk_interpolator", "Pk_grid"]:
                 # Make sure vars_pairs is a list of [list of 2 vars pairs]
                 vars_pairs = v.pop("vars_pairs", [])
@@ -157,6 +159,7 @@ class BoltzmannBase(Theory):
             elif v is None:
                 self._needs[k] = None
             else:
+                print('not ok')
                 raise LoggedError(self.log, "Unknown required product: '%s'.", k)
 
     def requested(self):
@@ -212,6 +215,7 @@ class BoltzmannBase(Theory):
         was called.
         """
         return self._get_z_dependent("comoving_radial_distance", z)
+
 
     def get_Pk_grid(self, var_pair=("delta_tot", "delta_tot"), nonlinear=True):
         """

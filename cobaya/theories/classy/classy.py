@@ -275,6 +275,13 @@ class classy(BoltzmannBase):
                         method="get_pk_and_k_and_z",
                         kwargs=v,
                         post=(lambda P, k, z: (k, z, np.array(P).T)))
+            elif k == "Cl_sz":
+                self.extra_args["output"] += "tSZ"
+                self.collectors[k] = Collector(
+                    method="cl_sz",
+                    args_names=[],
+                    args=[])
+
             elif v is None:
                 k_translated = self.translate_param(k)
                 if k_translated not in self.derived_extra:
@@ -470,6 +477,15 @@ class classy(BoltzmannBase):
         if "pp" in cls and ell_factor:
             cls['pp'][2:] *= ells_factor ** 2 * (2 * np.pi)
         return cls
+
+    def get_Cl_sz(self):
+        params = self.classy.get_params_sz()
+        ell = self.classy.ell_sz()
+        cls = self.classy.cl_sz()
+        trispectrum = self.classy.tllprime_sz()
+        R = [params,ell,cls,trispectrum]
+        return R
+
 
     def _get_z_dependent(self, quantity, z):
         try:
