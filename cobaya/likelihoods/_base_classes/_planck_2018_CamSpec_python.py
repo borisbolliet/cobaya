@@ -17,11 +17,6 @@ or pass a dictionary of ranges for each spectrum.
 ##TODO: calPlanck vs Aplanck
 
 """
-# Python 2/3 compatibility
-from __future__ import absolute_import, division
-import six
-if six.PY2:
-    from io import open
 
 # Global
 import numpy as np
@@ -37,7 +32,7 @@ use_cache = True
 def range_to_ells(use_range):
     """splits range string like '2-5 7 15-3000' into list of specific numbers"""
 
-    if isinstance(use_range, six.string_types):
+    if isinstance(use_range, str):
         ranges = []
         for ell_range in use_range.split():
             if '-' in ell_range:
@@ -85,7 +80,7 @@ class _planck_2018_CamSpec_python(_DataSetLikelihood):
         data_vector = []
         nX = 0
         used_indices = []
-        with open(ini.relativeFileName('data_ranges', "r", encoding="utf-8-sig")) as f:
+        with open(ini.relativeFileName('data_ranges'), "r", encoding="utf-8-sig") as f:
             lines = f.readlines()
             while not lines[-1].strip(): lines = lines[:-1]
             self.Nspec = len(lines)
@@ -265,10 +260,10 @@ class _planck_2018_CamSpec_python(_DataSetLikelihood):
                 elif i == 5:
                     delta_vector[ix:ix + n] -= CEE[self.ell_ranges[i]] / cal
                 ix += n
-        return self.fast_chi_squared(self.covinv, delta_vector)
+        return self._fast_chi_squared(self.covinv, delta_vector)
 
     def logp(self, **data_params):
-        Cls = self.theory.get_Cl(ell_factor=True)
+        Cls = self.provider.get_Cl(ell_factor=True)
         return -0.5 * self.chi_squared(Cls.get('tt'), Cls.get('te'), Cls.get('ee'),
                                        data_params)
 
@@ -288,8 +283,10 @@ class _planck_2018_CamSpec_python(_DataSetLikelihood):
         if foregrounds is not None and cals is not None and data_params is not None:
             raise ValueError('data_params not used')
         if foregrounds is None:
+            assert data_params is not None
             foregrounds = self.get_foregrounds(data_params)
         if cals is None:
+            assert data_params is not None
             cals = self.get_cals(data_params)
         if data_vector is None:
             data_vector = self.data_vector
@@ -311,9 +308,9 @@ class _planck_2018_CamSpec_python(_DataSetLikelihood):
         dL = np.zeros(n_p)
         ix1 = 0
         ell_offsets = [LS - lmin for LS in self.ell_ranges[:4]]
-        contiguous = not np.any(
-            [np.count_nonzero(LS - np.arange(LS[0], LS[-1] + 1, dtype=np.int)) for LS in
-             self.ell_ranges[:4]])
+        contiguous = not np.any(np.count_nonzero(LS - np.arange(LS[0],
+                                                                LS[-1] + 1, dtype=np.int))
+                                for LS in self.ell_ranges[:4])
         for i, (cal, LS, n) in enumerate(zip(cals[:4], ell_offsets, self.used_sizes[:4])):
             dL[LS] += d[ix1:ix1 + n] / cal
             ix = 0

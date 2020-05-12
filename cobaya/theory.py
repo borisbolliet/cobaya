@@ -14,10 +14,10 @@ caching of results, so that calculations do not need to be redone when the param
 which a component directly (or indirectly) depends have not changed.
 
 Subclasses generally provide the :meth:`Theory.get_requirements`,
-:meth:`Theory.calculate` and initialization methods as required. The :meth:`Theory.needs`
-method is used to tell a code which requirements are
+:meth:`Theory.calculate` and initialization methods as required. The
+:meth:`Theory.must_provide` method is used to tell a code which requirements are
 actually needed by other components, and may return a dictionary of additional conditional
-requirements based on those needs.
+requirements based on those passed.
 
 The :meth:`Theory.calculate` method saves all needed results in the state dictionary
 (which is cached and reused as needed). Subclasses define ``get_X`` or ``get_result(X)``
@@ -32,8 +32,9 @@ see :doc:`theories_and_dependencies`.
 
 import inspect
 from collections import deque
+from typing import Sequence, Optional, Union
 # Local
-from cobaya.conventions import _external, kinds, _requires, _params, _version
+from cobaya.conventions import _external, kinds, _requires, _params, empty_dict
 from cobaya.component import CobayaComponent, ComponentCollection
 from cobaya.tools import get_class, str_to_list
 from cobaya.log import LoggedError, always_stop_exceptions
@@ -42,48 +43,62 @@ from cobaya.tools import get_class_methods
 
 class Theory(CobayaComponent):
     """Base class theory that can calculate something."""
-    # Default options for all subclasses
-    class_options = {"speed": -1, "stop_at_error": False, _version: None}
 
-    def __init__(self, info={}, name=None, timing=None, path_install=None,
+    speed: float = -1
+    stop_at_error: bool = False
+    version: Optional[Union[dict, str]] = None
+
+    # special components set by the dependency resolver;
+    # included in updated yaml but not in defaults
+    input_params: Sequence[str] = None
+    output_params: Sequence[str] = None
+
+    def __init__(self, info=empty_dict, name=None, timing=None, packages_path=None,
                  initialize=True, standalone=True):
 
-        self.stop_at_error = False
-        self.speed = -1
         self._measured_speed = None
-        super(Theory, self).__init__(info, name=name, timing=timing,
-                                     path_install=path_install, initialize=initialize,
-                                     standalone=standalone)
+        super().__init__(info, name=name, timing=timing,
+                         packages_path=packages_path, initialize=initialize,
+                         standalone=standalone)
 
         self.provider = None  # set to Provider instance before calculations
         # Generate cache states, to avoid recomputing.
         # Default 3, but can be changed by sampler
         self.set_cache_size(3)
         self._helpers = {}
+        self._input_params_extra = set()
 
     def get_requirements(self):
         """
         Get a dictionary of requirements that are always needed (e.g. must be calculated
         by a another component or provided as input parameters).
 
-        :return: dictionary of requirements (or list of requirement names if no optional
-                 parameters are needed)
+        :return: dictionary of requirements (or iterable of requirement names if no
+                 optional parameters are needed)
         """
+        return dict.fromkeys(str_to_list(getattr(self, _requires, [])))
 
-        return {p: None for p in str_to_list(getattr(self, _requires, []))}
-
-    def needs(self, **requirements):
+    def must_provide(self, **requirements):
         """
         Function to be called specifying any output products that are needed and hence
         should be calculated by this component.
-        Requirements is a dictionary of requirement names with optional parameters for
-        each. This function may be called more than once with different requirements,
-        and will always be called at least once (possibly with empty requirements).
 
-        :return: optional dictionary of conditional requirements for these needs
+        Requirements is a dictionary of requirement names with optional parameters for
+        each. This function may be called more than once with different requirements.
+
+        :return: optional dictionary of conditional requirements for the ones requested.
         """
-        # reset states whenever needs change
+        # reset states whenever requirements change
         self._states.clear()
+        # MARKED FOR DEPRECATION IN v3.0
+        # This code will only run if needs() is defined but not must_provide()
+        if hasattr(self, "needs"):
+            self.log.warning(
+                "The .needs() method has been deprecated in favour of must_provide(). "
+                "Please rename your method.")
+            # BEHAVIOUR TO BE REPLACED BY AN ERROR
+            return self.needs(**requirements)
+        # END OF DEPRECATION BLOCK
 
     def calculate(self, state, want_derived=True, **params_values_dict):
         """
@@ -98,12 +113,13 @@ class Theory(CobayaComponent):
     def initialize_with_params(self):
         """
         Additional initialization after requirements called and input_params and
-        output_params have been assigned (but provider and needs unassigned).
+        output_params have been assigned (but provider and assigned requirements not yet
+        set).
         """
 
     def initialize_with_provider(self, provider):
         """
-        Final initialization after parameters, provider and needs assigned.
+        Final initialization after parameters, provider and assigned requirements set.
         The provider is used to get the requirements of this theory using provider.get_X()
         and provider.get_param('Y').
 
@@ -145,7 +161,7 @@ class Theory(CobayaComponent):
         Get a list of names of quantities that can be retrieved using the general
         get_result(X) method.
 
-        :return: list of quantities
+        :return: iterable of quantity names
         """
         return []
 
@@ -155,7 +171,7 @@ class Theory(CobayaComponent):
         The default implementation returns the result based on the params attribute set
         via the .yaml file or class params (with derived:True for derived parameters).
 
-        :return: list of parameter names
+        :return: iterable of parameter names
         """
         params = getattr(self, _params, None)
         if params:
@@ -167,10 +183,10 @@ class Theory(CobayaComponent):
     def get_can_support_params(self):
         """
         Get a list of parameters supported by this component, can be used to support
-        parameters that don't explicitly appear in the .yaml or class_options params
+        parameters that don't explicitly appear in the .yaml or class params attribute
         or are otherwise explicitly supported (e.g. via requirements)
 
-        :return: list of names of parameters
+        :return: iterable of names of parameters
         """
         return []
 
@@ -182,6 +198,13 @@ class Theory(CobayaComponent):
         :return: True or False
         """
         return False
+
+    @property
+    def input_params_extra(self):
+        """
+        Parameters required from other components, to be passed as input parameters.
+        """
+        return self._input_params_extra
 
     def set_cache_size(self, n):
         """
@@ -198,11 +221,12 @@ class Theory(CobayaComponent):
         (retrieved using get_current_derived()).
         """
         self.log.debug("Got parameters %r", params_values_dict)
-
-        for set_param in getattr(self, _requires, []):
-            # mess handling optional parameters that may be computed elsewhere, eg. YHe
-            params_values_dict = params_values_dict.copy()
-            params_values_dict[set_param] = self.provider.get_param(set_param)
+        for p in self._input_params_extra:
+            try:
+                params_values_dict[p] = self.provider.get_param(p)
+            except:
+                # Pop non-parameter (only done during 1st call)
+                self._input_params_extra = self._input_params_extra.difference({p})
         state = None
         if cached:
             for _state in self._states:
@@ -301,7 +325,7 @@ class Theory(CobayaComponent):
         return self._measured_speed or self.speed
 
     def set_measured_speed(self, speed):
-        self._measured_speed = speed
+        self.speed = speed
 
 
 class TheoryCollection(ComponentCollection):
@@ -309,8 +333,8 @@ class TheoryCollection(ComponentCollection):
     Initializes the list of theory codes.
     """
 
-    def __init__(self, info_theory, path_install=None, timing=None):
-        super(TheoryCollection, self).__init__()
+    def __init__(self, info_theory, packages_path=None, timing=None):
+        super().__init__()
         self.set_logger("theory")
 
         if info_theory:
@@ -327,13 +351,14 @@ class TheoryCollection(ComponentCollection):
                                               "Theory %s is not a Theory subclass", name)
                     else:
                         theory_class = get_class(name, kind=kinds.theory)
-                    self.add_instance(name, theory_class(info, path_install=path_install,
-                                                         timing=timing, name=name))
+                    self.add_instance(
+                        name, theory_class(
+                            info, packages_path=packages_path, timing=timing, name=name))
 
     def __getattribute__(self, name):
         if not name.startswith('_'):
             try:
-                return super(TheoryCollection, self).__getattribute__(name)
+                return super().__getattribute__(name)
             except AttributeError:
                 self.log.warn("No attribute %s of TheoryCollection. Use model.provider "
                               "if you want to access computed requests" % name)

@@ -6,23 +6,22 @@
 :Author: Jesus Torrado
 
 """
-# Python 2/3 compatibility
-from __future__ import absolute_import
 import numpy as np
 from scipy.interpolate import RectBivariateSpline
-from six import string_types
-from itertools import chain
+from typing import Mapping, Iterable
 
 # Local
 from cobaya.theory import Theory
 from cobaya.tools import deepcopy_where_possible
 from cobaya.log import LoggedError
-from cobaya.conventions import _c_km_s
+from cobaya.conventions import _c_km_s, empty_dict
 
 H_units_conv_factor = {"1/Mpc": 1, "km/s/Mpc": _c_km_s}
 
 
 class BoltzmannBase(Theory):
+    _get_z_dependent: callable  # defined by inheriting classes
+    renames: Mapping[str, str] = empty_dict
 
     def initialize(self):
 
@@ -30,7 +29,10 @@ class BoltzmannBase(Theory):
         self.collectors = {}
         # Additional input parameters to pass to CAMB, and attributes to set_ manually
         self.extra_args = deepcopy_where_possible(self.extra_args) or {}
-        self._needs = None
+        self._must_provide = None
+
+    def initialize_with_params(self):
+        self.check_no_repeated_input_extra()
 
     def get_allow_agnostic(self):
         return True
@@ -47,9 +49,33 @@ class BoltzmannBase(Theory):
 
         raise LoggedError(self.log, "Parameter not known: '%s'", p)
 
-    def needs(self, **requirements):
+    def _norm_vars_pairs(self, vars_pairs, name):
+        # Empty list: default to *total matter*: CMB + Baryon + MassiveNu
+        vars_pairs = vars_pairs or [2 * ["delta_tot"]]
+        if not isinstance(vars_pairs, Iterable):
+            raise LoggedError(self.log, "vars_pairs must be an iterable of pairs "
+                                        "of variable names: got '%r' for %s",
+                              vars_pairs, name)
+        if isinstance(list(vars_pairs)[0], str):
+            vars_pairs = [vars_pairs]
+        pairs = set()
+        for pair in vars_pairs:
+            if len(pair) != 2 or not all(isinstance(x, str) for x in pair):
+                raise LoggedError(self.log,
+                                  "Cannot understand vars_pairs '%r' for %s",
+                                  vars_pairs, name)
+            pairs.add(tuple(sorted(pair)))
+        return pairs
+
+    def _check_args(self, req, value, vals):
+        for par in vals:
+            if par not in value:
+                raise LoggedError(self.log, "%s must specify %s in requirements",
+                                  req, par)
+
+    def must_provide(self, **requirements):
         r"""
-        Specifies the quantities that each likelihood needs from the Cosmology code.
+        Specifies the quantities that this Boltzmann code is requested to compute.
 
         Typical requisites in Cosmology (as keywords, case insensitive):
 
@@ -67,11 +93,21 @@ class BoltzmannBase(Theory):
           Takes ``"z": [list_of_evaluated_redshifts]``, ``"k_max": [k_max]``,
           ``"extrap_kmax": [max_k_max_extrapolated]``, ``"nonlinear": [True|False]``,
           ``"vars_pairs": [["delta_tot", "delta_tot"], ["Weyl", "Weyl"], [...]]}``.
-          Non-linear contributions are included by default.
+          Non-linear contributions are included by default. Note that the nonlinear setting
+          determines whether nonlinear corrections are calculated; the get_Pk_interpolator
+          function also has a nonlinear argument to specify if you want the linear or
+          nonlinear spectrum returned (to have both linear and non-linear spectra
+          available request a tuple (False,True) for the nonlinear argument).
           All ``k`` values should be in units of ``1/Mpc``.
-        - ``Hubble={'z': [z_1, ...], 'units': '1/Mpc' or 'km/s/Mpc'}``: Hubble
-          rate at the redshifts requested, in the given units. Get it with
-          :func:`~BoltzmannBase.get_Hubble`.
+        - ``Pk_grid={...}``: similar to Pk_interpolator except that rather than returning
+          a bicubic spline object it returns the raw power spectrum grid as a (k, z, PK)
+          set of arrays.
+        - ``sigma_R{...}``: RMS linear fluctuation in spheres of radius R at redshifts z.
+          Takes ``"z": [list_of_evaluated_redshifts]``, ``"k_max": [k_max]``,
+          ``"vars_pairs": [["delta_tot", "delta_tot"],  [...]]}``,
+          ``"R": [list_of_evaluated_R]``. Note that R is in Mpc, not h^{-1} Mpc.
+        - ``Hubble={'z': [z_1, ...]}``: Hubble rate at the requested redshifts.
+          Get it with :func:`~BoltzmannBase.get_Hubble`.
         - ``angular_diameter_distance={'z': [z_1, ...]}``: Physical angular
           diameter distance to the redshifts requested. Get it with
           :func:`~BoltzmannBase.get_angular_diameter_distance`.
@@ -84,80 +120,107 @@ class BoltzmannBase(Theory):
         - ``k_max=[...]``: Fixes the maximum comoving wavenumber considered.
         - **Other derived parameters** that are not included in the input but whose
           value the likelihood may need.
+
         """
-
-        super(BoltzmannBase, self).needs(**requirements)
-
-        self._needs = self._needs or {p: None for p in self.output_params}
-        # TO BE DEPRECATED IN >=1.3
-        for product, capitalization in {
-            "cl": "Cl", "pk_interpolator": "Pk_interpolator"}.items():
-            if product in requirements:
-                raise LoggedError(
-                    self.log, "You requested product '%s', which from now on should be "
-                              "capitalized as '%s'.", product, capitalization)
+        super().must_provide(**requirements)
+        self._must_provide = self._must_provide or dict.fromkeys(self.output_params)
         # Accumulate the requirements across several calls in a safe way;
         # e.g. take maximum of all values of a requested precision parameter
         for k, v in requirements.items():
             # Products and other computations
             if k == "Cl":
-                self._needs["Cl"] = {
-                    cl: max(self._needs.get("Cl", {}).get(cl, 0), v.get(cl, 0))
-                    for cl in set(self._needs.get("Cl", {})).union(v)}
-            elif k == "Cl_sz":
-                self._needs["Cl_sz"] = self._needs.get("Cl_sz", {})
-            elif k in ["Pk_interpolator", "Pk_grid"]:
-                # Make sure vars_pairs is a list of [list of 2 vars pairs]
-                vars_pairs = v.pop("vars_pairs", [])
-                try:
-                    if isinstance(vars_pairs[0], string_types):
-                        vars_pairs = [vars_pairs]
-                except IndexError:
-                    # Empty list: default to *total matter*: CMB + Baryon + MassiveNu
-                    vars_pairs = [2 * ["delta_tot"]]
-                except:
-                    raise LoggedError(
-                        self.log,
-                        "Cannot understands vars_pairs '%r' for P(k) interpolator",
-                        vars_pairs)
-                vars_pairs = set([tuple(pair) for pair in chain(
-                    self._needs.get(k, {}).get("vars_pairs", []), vars_pairs)])
-                v["nonlinear"] = bool(v.get("nonlinear", True))
-                self._needs[k] = {
-                    "z": np.unique(np.concatenate(
-                        (self._needs.get(k, {}).get("z", []),
-                         np.atleast_1d(v["z"])))),
-                    "k_max": max(
-                        self._needs.get(k, {}).get("k_max", 0), v["k_max"]),
-                    "vars_pairs": vars_pairs}
-                self._needs[k].update(v)
+# <<<<<<< HEAD
+#                 self._needs["Cl"] = {
+#                     cl: max(self._needs.get("Cl", {}).get(cl, 0), v.get(cl, 0))
+#                     for cl in set(self._needs.get("Cl", {})).union(v)}
+#             elif k == "Cl_sz":
+#                 self._needs["Cl_sz"] = self._needs.get("Cl_sz", {})
+#             elif k in ["Pk_interpolator", "Pk_grid"]:
+#                 # Make sure vars_pairs is a list of [list of 2 vars pairs]
+#                 vars_pairs = v.pop("vars_pairs", [])
+#                 try:
+#                     if isinstance(vars_pairs[0], string_types):
+#                         vars_pairs = [vars_pairs]
+#                 except IndexError:
+#                     # Empty list: default to *total matter*: CMB + Baryon + MassiveNu
+#                     vars_pairs = [2 * ["delta_tot"]]
+#                 except:
+#                     raise LoggedError(
+#                         self.log,
+#                         "Cannot understands vars_pairs '%r' for P(k) interpolator",
+#                         vars_pairs)
+#                 vars_pairs = set([tuple(pair) for pair in chain(
+#                     self._needs.get(k, {}).get("vars_pairs", []), vars_pairs)])
+#                 v["nonlinear"] = bool(v.get("nonlinear", True))
+#                 self._needs[k] = {
+#                     "z": np.unique(np.concatenate(
+#                         (self._needs.get(k, {}).get("z", []),
+#                          np.atleast_1d(v["z"])))),
+#                     "k_max": max(
+#                         self._needs.get(k, {}).get("k_max", 0), v["k_max"]),
+#                     "vars_pairs": vars_pairs}
+#                 self._needs[k].update(v)
+# =======
+                current = self._must_provide.get(k, {})
+                self._must_provide[k] = {cl: max(current.get(cl, 0), v.get(cl, 0))
+                                         for cl in set(current).union(v)}
+            elif k == 'sigma_R':
+                self._check_args(k, v, ('z', 'R'))
+                for pair in self._norm_vars_pairs(v.pop("vars_pairs", []), k):
+                    k = ("sigma_R",) + pair
+                    current = self._must_provide.get(k, {})
+                    self._must_provide[k] = {
+                        "R": np.sort(np.unique(np.concatenate(
+                            (current.get("R", []), np.atleast_1d(v["R"]))))),
+                        "z": np.unique(np.concatenate(
+                            (current.get("z", []), np.atleast_1d(v["z"])))),
+                        "k_max": max(current.get("k_max", 0),
+                                     v.get("k_max", 2 / np.min(v["R"])))}
+            elif k in ("Pk_interpolator", "Pk_grid"):
+                # arguments are all identical, collect all in Pk_grid
+                self._check_args(k, v, ('z', 'k_max'))
+                redshifts = v.pop("z")
+                k_max = v.pop("k_max")
+                nonlin = v.pop("nonlinear", True)
+                if not isinstance(nonlin, Iterable):
+                    nonlin = [nonlin]
+                for var_pair in self._norm_vars_pairs(v.pop("vars_pairs", []), k):
+                    for nonlinear in nonlin:
+                        k = ("Pk_grid", bool(nonlinear)) + var_pair
+                        current = self._must_provide.get(k, {})
+                        self._must_provide[k] = dict(
+                            nonlinear=nonlinear,
+                            z=np.unique(np.concatenate((current.get("z", []),
+                                                        np.atleast_1d(redshifts)))),
+                            k_max=max(current.get("k_max", 0), k_max), **v)
+# >>>>>>> master
             elif k == "source_Cl":
-                if k not in self._needs:
-                    self._needs[k] = {}
+                if k not in self._must_provide:
+                    self._must_provide[k] = {}
                 if "sources" not in v:
                     raise LoggedError(
                         self.log, "Needs a 'sources' key, containing a dict with every "
                                   "source name and definition")
                 # Check that no two sources with equal name but diff specification
-                for source, window in v["sources"].items():
-                    if source in (getattr(self, "sources", {}) or {}):
-                        # TODO: improve this test!!!
-                        # (e.g. 2 z-vectors that fulfill np.allclose would fail a == test)
-                        if window != self.sources[source]:
-                            raise LoggedError(
-                                self.log,
-                                "Source %r requested twice with different specification: "
-                                "%r vs %r.", window, self.sources[source])
-                self._needs[k].update(v)
+                # for source, window in v["sources"].items():
+                #     if source in (getattr(self, "sources", {}) or {}):
+                #         # TODO: improve this test!!!
+                #         # (e.g. 2 z-vectors that fulfill np.allclose would fail a == test)
+                #         if window != self.sources[source]:
+                #             raise LoggedError(
+                #                 self.log,
+                #                 "Source %r requested twice with different specification: "
+                #                 "%r vs %r.", window, self.sources[source])
+                self._must_provide[k].update(v)
             elif k in ["Hubble", "angular_diameter_distance",
                        "comoving_radial_distance", "fsigma8"]:
-                if k not in self._needs:
-                    self._needs[k] = {}
-                self._needs[k]["z"] = np.unique(np.concatenate(
-                    (self._needs[k].get("z", []), v["z"])))
+                if k not in self._must_provide:
+                    self._must_provide[k] = {}
+                self._must_provide[k]["z"] = np.unique(np.concatenate(
+                    (self._must_provide[k].get("z", []), v["z"])))
             # Extra derived parameters and other unknown stuff (keep capitalization)
             elif v is None:
-                self._needs[k] = None
+                self._must_provide[k] = None
             else:
                 raise LoggedError(self.log, "Unknown required product: '%s'.", k)
 
@@ -165,7 +228,20 @@ class BoltzmannBase(Theory):
         """
         Returns the full set of requested cosmological products and parameters.
         """
-        return self._needs
+        return self._must_provide
+
+    def check_no_repeated_input_extra(self):
+        """
+        Checks that there are no repeated parameters between input and extra.
+
+        Should be called at initialisation, and at the end of every call to must_provide()
+        """
+        common = set(self.input_params).intersection(set(self.extra_args))
+        if common:
+            raise LoggedError(
+                self.log, "The following parameters appear both as input parameters and "
+                          "as extra arguments: %s. Please, remove one of the definitions "
+                          "of each.", common)
 
     def get_Cl(self, ell_factor=False, units="muK2"):
         r"""
@@ -185,8 +261,8 @@ class BoltzmannBase(Theory):
         r"""
         Returns the Hubble rate at the given redshifts.
 
-        The redshifts must be a subset of those requested when :func:`~BoltzmannBase.needs`
-        was called.
+        The redshifts must be a subset of those requested when
+        :func:`~BoltzmannBase.must_provide` was called.
 
         The available units are ``km/s/Mpc`` (i.e. ``c*H(Mpc^-1)``) and ``1/Mpc``.
         """
@@ -201,8 +277,8 @@ class BoltzmannBase(Theory):
         r"""
         Returns the physical angular diameter distance to the given redshifts in Mpc.
 
-        The redshifts must be a subset of those requested when :func:`~BoltzmannBase.needs`
-        was called.
+        The redshifts must be a subset of those requested when
+        :func:`~BoltzmannBase.must_provide` was called.
         """
         return self._get_z_dependent("angular_diameter_distance", z)
 
@@ -210,8 +286,8 @@ class BoltzmannBase(Theory):
         r"""
         Returns the comoving radial distance to the given redshifts in Mpc.
 
-        The redshifts must be a subset of those requested when :func:`~BoltzmannBase.needs`
-        was called.
+        The redshifts must be a subset of those requested when
+        :func:`~BoltzmannBase.must_provide` was called.
         """
         return self._get_z_dependent("comoving_radial_distance", z)
 
@@ -273,6 +349,23 @@ class BoltzmannBase(Theory):
         self._current_state[key] = result
         return result
 
+    def get_sigma_R(self, var_pair=("delta_tot", "delta_tot")):
+        """
+        Get sigma(R), the RMS power in an sphere of radius R
+        Note R is in Mpc not h^{-1}Mpc units and z and R are returned in ascending order.
+
+        You may get back more values than originally requested, but requested R and z
+        should in the returned arrays.
+
+        :param var_pair: which two fields to use for the RMS power
+        :return: R, z, sigma_R, where R and z are arrays of computed values,
+                 and sigma_R[i,j] is the value for z[i], R[j]
+        """
+        try:
+            return self._current_state[("sigma_R",) + tuple(sorted(var_pair))]
+        except KeyError:
+            raise LoggedError(self.log, "sigmaR %s not computed" % var_pair)
+
     def get_source_Cl(self):
         r"""
         Returns a dict of power spectra of for the computed sources, with keys a tuple of
@@ -286,8 +379,8 @@ class BoltzmannBase(Theory):
         `Planck 2015 results. XIII. Cosmological parameters <https://arxiv.org/pdf/1502.01589.pdf>`_,
         at the given redshifts.
 
-        The redshifts must be a subset of those requested when :func:`~BoltzmannBase.needs`
-        was called.
+        The redshifts must be a subset of those requested when
+        :func:`~BoltzmannBase.must_provide` was called.
         """
         pass
 
@@ -298,8 +391,8 @@ class BoltzmannBase(Theory):
 
         ``params_info`` should contain preferably the slow parameters only.
         """
-        from cobaya.cosmo_input import get_best_covmat
-        return get_best_covmat(self.path_install, params_info, likes_info)
+        from cobaya.cosmo_input import _get_best_covmat
+        return _get_best_covmat(self.packages_path, params_info, likes_info)
 
 
 class PowerSpectrumInterpolator(RectBivariateSpline):
@@ -324,8 +417,10 @@ class PowerSpectrumInterpolator(RectBivariateSpline):
         self.islog = logP
         #  Check order
         z, k = (np.atleast_1d(x) for x in [z, k])
-        if len(z) < 3:
-            raise ValueError('Require at least three redshifts for interpolation')
+        if len(z) < 4:
+            raise ValueError('Require at least four redshifts for Pk interpolation.'
+                             'Consider using Pk_grid if you just need a a small number'
+                             'of specific redshifts (doing 1D splines in k yourself).')
         i_z = np.argsort(z)
         i_k = np.argsort(k)
         self.logsign = logsign
@@ -350,7 +445,7 @@ class PowerSpectrumInterpolator(RectBivariateSpline):
 
             P_or_logP = logPnew
 
-        super(self.__class__, self).__init__(self.z, logk, P_or_logP)
+        super().__init__(self.z, logk, P_or_logP)
 
     def P(self, z, k, grid=None):
         """

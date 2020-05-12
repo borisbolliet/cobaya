@@ -6,13 +6,8 @@
 
 """
 
-# Python 2/3 compatibility
-from __future__ import absolute_import
-from __future__ import division
-
 # Global
 import sys
-import six
 import logging
 import traceback
 from copy import deepcopy
@@ -35,11 +30,12 @@ class LoggedError(Exception):
         msg = args[0] if len(args) else ""
         if msg and len(args) > 1:
             msg = msg % args[1:]
-        super(LoggedError, self).__init__(msg, **kwargs)
+        super().__init__(msg)
 
 
+# Exceptions that will never be ignored when a component's calculation fails
 always_stop_exceptions = (LoggedError, KeyboardInterrupt, SystemExit, NameError,
-                          SyntaxError, AttributeError)
+                          SyntaxError, AttributeError, KeyError)
 
 
 def safe_exit():
@@ -100,11 +96,8 @@ def logger_setup(debug=None, debug_file=None):
                    {logging.ERROR: "*ERROR* ",
                     logging.WARNING: "*WARNING* "}.get(record.levelno, "") +
                    "%(message)s")
-            if six.PY3:
-                self._style._fmt = fmt
-            else:
-                self._fmt = fmt
-            return super(MyFormatter, self).format(record)
+            self._style._fmt = fmt
+            return super().format(record)
 
     # Configure stdout handler
     handle_stdout = logging.StreamHandler(sys.stdout)
@@ -118,13 +111,14 @@ def logger_setup(debug=None, debug_file=None):
         file_stdout.setFormatter(MyFormatter())
         logging.root.addHandler(file_stdout)
     # Add stdout handler only once!
+    # noinspection PyUnresolvedReferences
     if not any(h.stream == sys.stdout for h in logging.root.handlers):
         logging.root.addHandler(handle_stdout)
     # Configure the logger to manage exceptions
     sys.excepthook = exception_handler
 
 
-class HasLogger(object):
+class HasLogger:
     """
     Class having a logger with its name (or an alternative one).
 
@@ -136,7 +130,7 @@ class HasLogger(object):
         self.log = logging.getLogger(name.lower() if lowercase else name)
 
     # Copying and pickling
-    def __deepcopy__(self, memo={}):
+    def __deepcopy__(self, memo=None):
         new = (lambda cls: cls.__new__(cls))(self.__class__)
         new.__dict__ = {k: deepcopy(v) for k, v in self.__dict__.items() if k != "log"}
         return new

@@ -1,12 +1,12 @@
 import pytest
 
-from collections import OrderedDict
 from cobaya.model import get_model
 from cobaya.theory import Theory
 from cobaya.likelihood import Likelihood
 from cobaya.log import LoggedError
-from .common import process_modules_path
+from .common import process_packages_path
 
+debug = True
 
 # Aderived = 1
 # Aout = [Ain]
@@ -54,8 +54,8 @@ class B2(Theory):
         return {'Aderived', 'Aresult', 'Bpar'}
 
     def calculate(self, state, want_derived=True, **params_values_dict):
-        state['Bout'] = (self.provider.get_param('Aderived') * params_values_dict['Bpar']
-                         , self.provider.get_Aresult())
+        state['Bout'] = (self.provider.get_param('Aderived') * params_values_dict['Bpar'],
+                         self.provider.get_Aresult())
 
         if want_derived:
             state['derived'] = {'Bderived': 10}
@@ -96,25 +96,25 @@ class Like(Likelihood):
 
 info = {'likelihood': {'like': Like},
         'params': {'Bpar': 3, 'Ain': 5},
-        'debug': False}
+        'debug': debug}
 
 
 def _test_loglike(theories):
     for th in theories, theories[::-1]:
-        info['theory'] = OrderedDict(th)
+        info['theory'] = dict(th)
         model = get_model(info)
 
         assert model.loglikes({})[0] == 8, "test loglike failed for %s" % th
 
 
-def test_dependencies(modules):
-    info['modules'] = process_modules_path(modules)
+def test_dependencies(packages_path):
+    info['packages_path'] = process_packages_path(packages_path)
     theories = [('A', A), ('B', B)]
     _test_loglike(theories)
     _test_loglike([('A', A), ('B', B2)])
 
     info['params']['Bderived'] = {'derived': True}
-    info['theory'] = OrderedDict(theories)
+    info['theory'] = dict(theories)
     model = get_model(info)
     assert model.loglikes({})[1] == [10], "failed"
     info['params'].pop('Bderived')
@@ -152,8 +152,8 @@ class D(Theory):
     def get_can_provide(self):
         return ['Dresult']
 
-    def needs(self, **needs):
-        if 'Dresult' in needs:
+    def must_provide(self, **must_provide):
+        if 'Dresult' in must_provide:
             return {'Aresult'}
 
 
@@ -165,8 +165,8 @@ class E(Theory):
     def get_Eresult(self):
         return self._current_state['E']
 
-    def needs(self, **needs):
-        if 'Eresult' in needs:
+    def must_provide(self, **must_provide):
+        if 'Eresult' in must_provide:
             return {'Dresult'}
 
 
@@ -194,8 +194,8 @@ class F(Theory):
     def get_Fresult(self):
         pass
 
-    def needs(self, **needs):
-        if 'Fresult' in needs:
+    def must_provide(self, **must_provide):
+        if 'Fresult' in must_provide:
             return {'LikeDerived'}
 
 
@@ -210,17 +210,17 @@ class Like4(Likelihood):
 
 info2 = {'likelihood': {'like': Like2},
          'params': {'Ain': 5},
-         'debug': True, 'stop_at_error': True}
+         'debug': debug, 'stop_at_error': True}
 
 
 def _test_loglike2(theories):
     for th in theories, theories[::-1]:
-        info2['theory'] = OrderedDict(th)
+        info2['theory'] = dict(th)
         model = get_model(info2)
         assert model.loglike()[0] == 20., "fail conditional dependency for %s" % th
 
 
-def test_conditional_dependencies(modules):
+def test_conditional_dependencies(packages_path):
     theories = [('A', A), ('D', D)]
     _test_loglike2(theories)
 
@@ -238,39 +238,3 @@ def test_conditional_dependencies(modules):
     with pytest.raises(LoggedError) as e:
         _test_loglike2(theories)
     assert "Circular dependency" in str(e.value)
-
-    from cobaya.theory import Theory
-
-    class ACalculator(Theory):
-
-        def initialize(self):
-            """called from __init__ to initialize"""
-
-        def initialize_with_provider(self, provider):
-            """
-            Initialization after other components initialized, using Provider class
-            instance which is used to return any dependencies (see calculate below).
-            """
-            self.provider = provider
-
-        def get_requirements(self):
-            """
-            Return dictionary of derived parameters or other quantities that are needed
-            by this component and should be calculated by another theory class.
-            """
-            return {'b_derived': None}
-
-        def needs(self, **requirements):
-            if 'A' in requirements:
-                # e.g. calculating A requires B computed using same kmax (default 10)
-                return {'B': {'kmax': requirements['A'].get('kmax', 10)}}
-
-        def get_can_provide_params(self):
-            return ['Aderived']
-
-        def calculate(self, state, want_derived=True, **params_values_dict):
-            state['A'] = self.provider.get_B() * self.provider.get_param('b_derived')
-            state['derived'] = {'Aderived': 10}
-
-        def get_A(self, normalization=1):
-            return self._current_state['A'] * normalization

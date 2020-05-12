@@ -5,6 +5,9 @@ Creating new internal likelihoods or external likelihood classes should be strai
 For simple cases you can also just define a likelihood function (see :doc:`cosmo_external_likelihood`).
 
 Likelihoods should inherit from the base :class:`.likelihood.Likelihood` class, or one of the existing extensions.
+Note that :class:`.likelihood.Likelihood` inherits directly from :class:`.theory.Theory`, so likelihood and
+theory components have a common structure, with likelihoods adding specific functions to return the likelihood.
+
 A minimal framework would look like this
 
 .. code:: python
@@ -95,9 +98,71 @@ There is no fundamental difference between internal likelihood classes (in the C
 distributed externally. However, if you are distributing externally you may also wish to provide a way to
 calculate the likelihood from pre-computed theory inputs as well as via Cobaya. This is easily done by extracting
 the theory results in ``logp`` and them passing them and the nuisance parameters to a separate function,
-e.g. `log_likelihood` where the calculation is actually done. Your log_likelihood function can then be called outside
-Cobaya to calculate the likelihood for any externally provided theory results (as well as being directly usable in
-Cobaya via ``logp``).
+e.g. `log_likelihood` where the calculation is actually done. For example, adapting the example above to:
+
+.. code:: python
+
+    class MyLikelihood(Likelihood):
+
+        ...
+
+        def logp(self, **params_values):
+            H0_theory = self.provider.get_param("H0")
+            cls = self.provider.get_Cl(ell_factor=True)
+            return self.log_likelihood(cls, H0, **params_values)
+
+        def log_likelihood(self, cls, H0, **data_params)
+            my_foreground_amp = data_params['my_foreground_amp']
+            chi2 = ...
+            return -chi2 / 2
+
+
+You can then create an instance of your class and call log_likelihood, entirely independently of
+Cobaya. However, in this case you have to provide the full theory results to the function, rather than using the self.provider to get them
+for the current parameters (self.provider is only available in Cobaya once a full model has been instantiated).
+
+If you want to call your likelihood for specific parameters (rather than the corresponding computed theory results), you need to
+call get_model() to instantiate a full model specifying which components calculate the required theory inputs. For example,
+
+.. code:: python
+
+
+   packages_path = '/path/to/your/packages'
+
+   info = {
+       'params': fiducial_params,
+       'likelihood': {'my_likelihood': MyLikelihood},
+       'theory': {'camb': None},
+       'packages': packages_path}
+
+   from cobaya.model import get_model
+   model = get_model(info)
+   model.logposterior({'H0':71.1, 'my_param': 1.40, ...})
+
+
+Input parameters can be specified in the likelihood's .yaml file as shown above.
+Alternatively, they can be specified as class attributes. For example, this would
+be equivalent to the .yaml-based example above
+
+.. code:: python
+
+    class MyLikelihood(Likelihood):
+        cl_file = "/path/do/data_file"
+        # Aliases for automatic covariance matrix
+        aliases = ["myOld"]
+        # Speed in evaluations/second (after theory inputs calculated).
+        speed = 500
+        params = {"my_foreground_amp":
+                      {"prior": {"dist": "uniform", "min": 0, "max": 0},
+                       "ref" {"dist": "norm", "loc": 153, "scale": 27},
+                       "proposal": 27,
+                       "latex": r"A^{f}_{\rm{mine}"}}
+
+If your likelihood has class attributes that are not possible input parameters, they should be
+made private by starting the name with an underscore.
+
+Any class can have class attributes or a .yaml file, but not both. Class
+attributes or .yaml files are inherited, with re-definitions override the inherited value.
 
 _InstallableLikelihood
 -------------------------

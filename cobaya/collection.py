@@ -1,35 +1,24 @@
 """
 .. module:: collection
 
-:Synopsis: Class to store the Montecarlo sample
-:Author: Jesus Torrado
-
-Class keeping track of the samples.
-
-Basically, a wrapper around a `pandas.DataFrame`.
+:Synopsis: Classes to store the Montecarlo samples and single points.
+:Author: Jesus Torrado and Antony Lewis
 
 """
-
-# Python 2/3 compatibility
-from __future__ import absolute_import, division
-import six
-if six.PY2:
-    from io import open
 
 # Global
 import os
 import logging
 import numpy as np
 import pandas as pd
+from typing import Optional
 from getdist import MCSamples
-from collections import OrderedDict as odict
 
 # Local
-from cobaya.conventions import _weight, _chi2, _minuslogpost, _minuslogprior
-from cobaya.conventions import _separator
+from cobaya.conventions import _weight, _chi2, _minuslogpost, _minuslogprior, \
+    _get_chi2_name, _separator
 from cobaya.tools import load_DataFrame
 from cobaya.log import LoggedError, HasLogger
-from cobaya.yaml import force_unicode
 
 # Suppress getdist output
 from getdist import chains
@@ -39,8 +28,8 @@ chains.print_load_details = False
 # Default chunk size for enlarging collections more efficiently
 # If a factor is defined (as a fraction !=0), it is used instead
 # (e.g. 0.10 to grow the number of rows by 10%)
-enlargement_size = 100
-enlargement_factor = None
+enlargement_size: int = 100
+enlargement_factor: Optional[int] = None
 
 
 # Make sure that we don't reach the empty part of the dataframe
@@ -72,7 +61,7 @@ class BaseCollection(HasLogger):
         self.derived_params = list(model.parameterization.derived_params())
         self.minuslogprior_names = [
             _minuslogprior + _separator + piname for piname in list(model.prior)]
-        self.chi2_names = [_chi2 + _separator + likname for likname in model.likelihood]
+        self.chi2_names = [_get_chi2_name(likname) for likname in model.likelihood]
         columns = [_weight, _minuslogpost]
         columns += list(self.sampled_params)
         # Just in case: ignore derived names as likelihoods: would be duplicate cols
@@ -83,15 +72,20 @@ class BaseCollection(HasLogger):
 
 
 class Collection(BaseCollection):
+    """
+    Holds a collection of samples, stored internally into a ``pandas.DataFrame``.
+
+    The DataFrame itself is accessible as the ``Collection.data`` attribute, but slicing
+    can be done on the ``Collection`` itself.
+    """
 
     def __init__(self, model, output=None,
                  initial_size=enlargement_size, name=None, extension=None, file_name=None,
                  resuming=False, load=False, onload_skip=0, onload_thin=1):
-
-        super(Collection, self).__init__(model, name)
-        self._value_dict = odict([(p, np.nan) for p in self.columns])
+        super().__init__(model, name)
+        self._value_dict = {p: np.nan for p in self.columns}
         # Create/load the main data frame and the tracking indices
-        # Create the dataframe structure
+        # Create the DataFrame structure
         if output:
             self.file_name, self.driver = output.prepare_collection(
                 name=self.name, extension=extension)
@@ -187,19 +181,27 @@ class Collection(BaseCollection):
                 enlarge_by = enlargement_size
             self.data = pd.concat([
                 self.data, pd.DataFrame(np.nan, columns=self.data.columns,
-                                        index=np.arange(self.n(),
-                                                        self.n() + enlarge_by))])
+                                        index=np.arange(len(self),
+                                                        len(self) + enlarge_by))])
 
-    def _append(self, collection):
+    def append(self, collection):
         """
         Append another collection.
         Internal method: does not check for consistency!
         """
-        self.data = pd.concat([self.data[:self.n()], collection.data], ignore_index=True)
-        self._n = self.n() + collection.n()
+        self.data = pd.concat([self.data[:len(self)], collection.data], ignore_index=True)
+        self._n = len(self) + len(collection)
 
     # Retrieve-like methods
+    # MARKED FOR DEPRECATION IN v3.0
     def n(self):
+        self.log.warning("*DEPRECATION*: `Collection.n()` will be deprecated soon "
+                         "in favor of `len(Collection)`")
+        # BEHAVIOUR TO BE REPLACED BY ERROR:
+        return len(self)
+    # END OF DEPRECATION BLOCK
+
+    def __len__(self):
         return self._n
 
     def n_last_out(self):
@@ -207,11 +209,11 @@ class Collection(BaseCollection):
 
     # Make the dataframe printable (but only the filled ones!)
     def __repr__(self):
-        return self.data[:self.n()].__repr__()
+        return self.data[:len(self)].__repr__()
 
     # Make the dataframe iterable over rows
     def __iter__(self):
-        return self.data[:self.n()].iterrows()
+        return self.data[:len(self)].iterrows()
 
     # Accessing the dataframe
     def __getitem__(self, *args):
@@ -228,7 +230,7 @@ class Collection(BaseCollection):
         if len(args) > 1:
             raise ValueError("Use just one index/column, or use .loc[row, column]. "
                              "(Notice that slices in .loc *include* the last point.)")
-        if isinstance(args[0], six.string_types):
+        if isinstance(args[0], str):
             return self.data.iloc[:self._n, self.data.columns.get_loc(args[0])]
         elif hasattr(args[0], "__len__"):
             try:
@@ -236,7 +238,7 @@ class Collection(BaseCollection):
                        [self.data.columns.get_loc(c) for c in args[0]]]
             except KeyError:
                 raise ValueError("Some of the indices are not valid columns.")
-        elif isinstance(args[0], six.integer_types):
+        elif isinstance(args[0], int):
             return self.data.iloc[check_index(args[0], self._n)]
         elif isinstance(args[0], slice):
             return self.data.iloc[check_slice(args[0], self._n)]
@@ -288,9 +290,9 @@ class Collection(BaseCollection):
         # No logging of warnings temporarily, so getdist won't complain unnecessarily
         logging.disable(logging.WARNING)
         mcsamples = MCSamples(
-            samples=self.data[:self.n()][names].values[first:last],
-            weights=self.data[:self.n()][_weight].values[first:last],
-            loglikes=self.data[:self.n()][_minuslogpost].values[first:last], names=names)
+            samples=self.data[:len(self)][names].values[first:last],
+            weights=self.data[:len(self)][_weight].values[first:last],
+            loglikes=self.data[:len(self)][_minuslogpost].values[first:last], names=names)
         logging.disable(logging.NOTSET)
         return mcsamples
 
@@ -303,10 +305,8 @@ class Collection(BaseCollection):
         self._get_driver("_load")(**kwargs)
 
     # Dump/update/delete collection
-    def _out_dump(self):
-        self._get_driver("_dump")()
 
-    def _out_update(self):
+    def out_update(self):
         self._get_driver("_update")()
 
     def _out_delete(self):
@@ -316,13 +316,13 @@ class Collection(BaseCollection):
     def _load__txt(self, skip=0, thin=1):
         self.log.debug("Skipping %d rows and thinning with factor %d.", skip, thin)
         self.data = load_DataFrame(self.file_name, skip=skip, thin=thin)
-        self.log.info("Loaded sample from '%s'", self.file_name)
+        self.log.info("Loaded %d samples from '%s'", len(self.data), self.file_name)
 
     def _dump__txt(self):
-        self._dump_slice__txt(0, self.n())
+        self._dump_slice__txt(0, len(self))
 
     def _update__txt(self):
-        self._dump_slice__txt(self.n_last_out(), self.n())
+        self._dump_slice__txt(self.n_last_out(), len(self))
 
     def _dump_slice__txt(self, n_min=None, n_max=None):
         if n_min is None or n_max is None:
@@ -330,16 +330,30 @@ class Collection(BaseCollection):
         if self._n_last_out == n_max:
             return
         self._n_last_out = n_max
-        n_float = 8
+        if not getattr(self, "_txt_formatters", False):
+            n_float = 8
+            # Add to this 7 places: sign, leading 0's, exp with sign and 3 figures.
+            width_col = lambda col: max(7 + n_float, len(col))
+            fmts = ["{:" + "{}.{}".format(width_col(col), n_float) + "g}"
+                    for col in self.data.columns]
+            # `fmt` as a kwarg with default value is needed to force substitution of var
+            self._txt_formatters = {
+                col: (lambda x, fmt=fmt: fmt.format(x))
+                for col, fmt in zip(self.data.columns, fmts)}
+            self._header_formatter = [
+                (lambda s, w=width_col(col): ("{:>" + "{}".format(w) + "s}").format(s))
+                for col in self.data.columns]
         do_header = not n_min
+        if do_header:
+            with open(self.file_name, "a", encoding="utf-8") as out:
+                out.write("#" + " ".join(
+                    f(col) for f, col
+                    in zip(self._header_formatter, self.data.columns))[1:] + "\n")
         with open(self.file_name, "a", encoding="utf-8") as out:
             lines = self.data[n_min:n_max].to_string(
-                header=do_header, index=False, na_rep="nan", justify="right",
-                float_format=(lambda x: ("%%.%dg" % n_float) % x))
-            # if header, add comment marker by hand (messes with align if auto)
-            if do_header:
-                lines = "#" + (lines[1:] if lines[0] == " " else lines)
-            out.write(force_unicode(lines + "\n"))
+                header=False, index=False, na_rep="nan", justify="right",
+                formatters=self._txt_formatters)
+            out.write(lines + "\n")
 
     def _delete__txt(self):
         try:
@@ -359,7 +373,8 @@ class Collection(BaseCollection):
 
 
 class OneSamplePoint:
-    """Wrapper to hold a single point, e.g. the current point of an MCMC."""
+    """Wrapper to hold a single point, e.g. the current point of an MCMC.
+    Alternative to :class:`~collection.OnePoint`, faster but with less functionality."""
 
     def __init__(self, model, output_thin=1):
         self.sampled_params = list(model.parameterization.sampled_params())
@@ -381,12 +396,13 @@ class OneSamplePoint:
             self._added_weight += self.weight
             if self._added_weight >= self.output_thin:
                 weight = self._added_weight // self.output_thin
-                self._added_weight = self._added_weight % self.output_thin
+                self._added_weight %= self.output_thin
             else:
-                return
+                return False
         else:
             weight = self.weight
         collection.add(self.values, weight=weight, **self.kwargs)
+        return True
 
     def __str__(self):
         return ", ".join(
@@ -394,14 +410,15 @@ class OneSamplePoint:
 
 
 class OnePoint(Collection):
-    """Wrapper of Collection to hold a single point, e.g. the current point of an MCMC."""
+    """Wrapper of :class:`~collection.Collection` to hold a single point,
+    e.g. the current point of an MCMC."""
 
     def __init__(self, *args, **kwargs):
         kwargs["initial_size"] = 1
-        super(OnePoint, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def __getitem__(self, columns):
-        if isinstance(columns, six.string_types):
+        if isinstance(columns, str):
             return self.data.values[0, self.data.columns.get_loc(columns)]
         else:
             try:
@@ -410,9 +427,9 @@ class OnePoint(Collection):
             except KeyError:
                 raise ValueError("Some of the indices are not valid columns.")
 
-    # Resets the counter, so the dataframe never fills up!
+    # Resets the counter, so the DataFrame never fills up!
     def add(self, *args, **kwargs):
-        super(OnePoint, self).add(*args, **kwargs)
+        super().add(*args, **kwargs)
         self._n = 0
 
     def increase_weight(self, increase):

@@ -5,23 +5,17 @@
 :Author: Jesus Torrado
 
 """
-# Python 2/3 compatibility
-from __future__ import absolute_import
-from __future__ import division
-
 # Global
-import numpy as np
-from collections import namedtuple, OrderedDict as odict
-from itertools import chain, permutations
 import logging
-import six
+from itertools import chain
+from typing import NamedTuple, Sequence, Mapping
+import numpy as np
 
 # Local
-from cobaya.conventions import kinds, _prior, _timing, _aliases
-from cobaya.conventions import _params, _overhead_time, _provides
-from cobaya.conventions import _path_install, _debug, _debug_default, _debug_file
-from cobaya.conventions import _input_params, _output_params, _chi2, _separator
-from cobaya.conventions import _input_params_prefix, _output_params_prefix, _requires
+from cobaya.conventions import kinds, _prior, _timing, _params, _provides, \
+    _overhead_time, _packages_path, _debug, _debug_default, _debug_file, _input_params, \
+    _output_params, _get_chi2_name, _input_params_prefix, \
+    _output_params_prefix, empty_dict
 from cobaya.input import update_info
 from cobaya.parameterization import Parameterization
 from cobaya.prior import Prior
@@ -30,17 +24,23 @@ from cobaya.likelihood import LikelihoodCollection, LikelihoodExternalFunction, 
 from cobaya.theory import TheoryCollection
 from cobaya.log import LoggedError, logger_setup, HasLogger
 from cobaya.yaml import yaml_dump
-from cobaya.tools import gcd, deepcopy_where_possible, are_different_params_lists, \
-    str_to_list
+from cobaya.tools import deepcopy_where_possible, are_different_params_lists, \
+    str_to_list, sort_parameter_blocks, recursive_update, sort_cosmetic, ensure_dict
 from cobaya.component import Provider
 from cobaya.mpi import more_than_one_process, get_mpi_comm
 
+
 # Log-posterior namedtuple
-LogPosterior = namedtuple("LogPosterior", ["logpost", "logpriors", "loglikes", "derived"])
-LogPosterior.__new__.__defaults__ = (None, None, [], [])
+class LogPosterior(NamedTuple):
+    logpost: float = None
+    logpriors: Sequence[float] = None
+    loglikes: Sequence[float] = []
+    derived: Sequence[float] = []
 
 
-class Requirement(namedtuple("Requirement", ["name", "options"])):
+class Requirement(NamedTuple):
+    name: str
+    options: dict
 
     def __eq__(self, other):
         return self.name == other.name and _dict_equal(self.options, other.options)
@@ -59,9 +59,9 @@ def _dict_equal(d1, d2):
         return True
     if bool(d1) != bool(d2):
         return False
-    if isinstance(d1, six.string_types):
+    if isinstance(d1, str):
         return d1 == d2
-    if isinstance(d1, dict):
+    if isinstance(d1, Mapping):
         if set(list(d1)) != set(list(d2)):
             return False
         for k, v in d1.items():
@@ -78,37 +78,34 @@ def _dict_equal(d1, d2):
     return d1 == d2
 
 
-def get_model(info, stop_at_error=None):
-    assert hasattr(info, "keys"), (
+def get_model(info):
+    assert isinstance(info, Mapping), (
         "The first argument must be a dictionary with the info needed for the model. "
         "If you were trying to pass the name of an input file instead, "
         "load it first with 'cobaya.input.load_input', "
         "or, if you were passing a yaml string, load it with 'cobaya.yaml.yaml_load'.")
-    # Configure the logger ASAP
-    # TODO: Just a dummy import before configuring the logger, until I fix root/individual level
-    import getdist
     info = deepcopy_where_possible(info)
-    # Create the updated input information, including defaults for each module.
     logger_setup(info.pop(_debug, _debug_default), info.pop(_debug_file, None))
-    info_stop = info.pop("stop_at_error", False)
+    # Inform about ignored info keys
     ignored_info = {}
     for k in list(info):
-        if k not in [_params, kinds.likelihood, _prior, kinds.theory, _path_install,
-                     _timing]:
-            ignored_info.update({k: info.pop(k)})
+        if k not in [_params, kinds.likelihood, _prior, kinds.theory, _packages_path,
+                     _timing, "stop_at_error"]:
+            ignored_info[k] = info.pop(k)
     if ignored_info:
         logging.getLogger(__name__.split(".")[-1]).warning(
             "Ignored blocks/options: %r", list(ignored_info))
+    # Create the updated input information, including defaults for each component.
     updated_info = update_info(info)
     if logging.root.getEffectiveLevel() <= logging.DEBUG:
         logging.getLogger(__name__.split(".")[-1]).debug(
             "Input info updated with defaults (dumped to YAML):\n%s",
-            yaml_dump(updated_info))
+            yaml_dump(sort_cosmetic(updated_info)))
     # Initialize the parameters and posterior
     return Model(updated_info[_params], updated_info[kinds.likelihood],
                  updated_info.get(_prior), updated_info.get(kinds.theory),
-                 path_install=info.get(_path_install), timing=updated_info.get(_timing),
-                 stop_at_error=info_stop if stop_at_error is None else stop_at_error)
+                 packages_path=info.get(_packages_path), timing=updated_info.get(_timing),
+                 stop_at_error=info.get("stop_at_error", False))
 
 
 class Model(HasLogger):
@@ -122,7 +119,7 @@ class Model(HasLogger):
     """
 
     def __init__(self, info_params, info_likelihood, info_prior=None, info_theory=None,
-                 path_install=None, timing=None, allow_renames=True, stop_at_error=False,
+                 packages_path=None, timing=None, allow_renames=True, stop_at_error=False,
                  post=False, prior_parameterization=None):
         self.set_logger(lowercase=True)
         self._updated_info = {
@@ -131,7 +128,7 @@ class Model(HasLogger):
         if not self._updated_info[kinds.likelihood]:
             raise LoggedError(self.log, "No likelihood requested!")
         for k, v in ((_prior, info_prior), (kinds.theory, info_theory),
-                     (_path_install, path_install), (_timing, timing)):
+                     (_packages_path, packages_path), (_timing, timing)):
             if v not in (None, {}):
                 self._updated_info[k] = deepcopy_where_possible(v)
         self.parameterization = Parameterization(self._updated_info[_params],
@@ -139,34 +136,30 @@ class Model(HasLogger):
                                                  ignore_unused_sampled=post)
         self.prior = Prior(prior_parameterization or self.parameterization,
                            self._updated_info.get(_prior, None))
-
         self.timing = timing
-
         info_theory = self._updated_info.get(kinds.theory)
-        self.theory = TheoryCollection(info_theory, path_install=path_install,
+        self.theory = TheoryCollection(info_theory, packages_path=packages_path,
                                        timing=timing)
-
         info_likelihood = self._updated_info[kinds.likelihood]
         self.likelihood = LikelihoodCollection(info_likelihood, theory=self.theory,
-                                               path_install=path_install, timing=timing)
-
+                                               packages_path=packages_path, timing=timing)
         if stop_at_error:
             for component in self.components:
                 component.stop_at_error = stop_at_error
-
         # Assign input/output parameters
         self._assign_params(info_likelihood, info_theory)
-
         self._set_dependencies_and_providers()
-
-        self._measured_speeds = None
-
-        # Overhead per likelihood evaluation
+        # Add to the updated info some values that are only available after initialisation
+        self._updated_info = recursive_update(
+            self._updated_info, self.get_versions(add_version_field=True))
+        # Overhead per likelihood evaluation, approximately ind from # input params
+        # Evaluation of non-uniform priors will add some overhead per parameter.
         self.overhead = _overhead_time
 
     def info(self):
         """
-        Returns a copy of the information used to create the model, including defaults.
+        Returns a copy of the information used to create the model, including defaults
+        and some new values that are only available after initialisation.
         """
         return deepcopy_where_possible(self._updated_info)
 
@@ -237,11 +230,10 @@ class Model(HasLogger):
         self.log.debug("Got input parameters: %r", input_params)
         n_theory = len(self.theory)
         loglikes = np.empty(len(self.likelihood))
-
-        for (component, index), dependence in zip(self._component_order.items(),
-                                                  self._ordered_param_dependence):
-
-            depend_list = [input_params[p] for p in dependence]
+        for (component, index), param_dep in zip(self._component_order.items(),
+                                                 self._params_of_dependencies):
+            depend_list = \
+                [input_params[p] for p in param_dep]
             params = {p: input_params[p] for p in component.input_params}
             compute_success = component.check_cache_and_compute(
                 want_derived=return_derived,
@@ -256,13 +248,18 @@ class Model(HasLogger):
                 derived_dict.update(component.get_current_derived())
             # Add chi2's to derived parameters
             if hasattr(component, "get_current_logp"):
-                loglikes[index - n_theory] = component.get_current_logp()
+                try:
+                    loglikes[index - n_theory] = float(component.get_current_logp())
+                except TypeError:
+                    raise LoggedError(
+                        self.log,
+                        "Likelihood %s has not returned a valid log-likelihood, "
+                        "but %r instead.", str(component), component.get_current_logp())
                 if return_derived:
-                    derived_dict[_chi2 + _separator +
-                                 component.get_name().replace(".", "_")] \
+                    derived_dict[_get_chi2_name(component.get_name().replace(".", "_"))] \
                         = -2 * loglikes[index - n_theory]
-                    for this_type in getattr(component, "type", []):
-                        aggr_chi2_name = _chi2 + _separator + this_type
+                    for this_type in getattr(component, "type", []) or []:
+                        aggr_chi2_name = _get_chi2_name(this_type)
                         if aggr_chi2_name not in derived_dict:
                             derived_dict[aggr_chi2_name] = 0
                         derived_dict[aggr_chi2_name] += -2 * loglikes[index - n_theory]
@@ -301,7 +298,7 @@ class Model(HasLogger):
         """
         if params_values is None:
             params_values = []
-        if hasattr(params_values, "keys") and not _no_check:
+        elif hasattr(params_values, "keys") and not _no_check:
             params_values = self.parameterization.check_sampled(**params_values)
 
         input_params = self.parameterization.to_input(params_values, copied=False)
@@ -431,6 +428,33 @@ class Model(HasLogger):
         return self.logposterior(params_values, make_finite=make_finite,
                                  return_derived=False, cached=cached)[0]
 
+    def get_valid_point(self, max_tries, ignore_fixed_ref=False):
+        """
+        Finds a point with finite posterior, sampled from from the reference pdf.
+
+        It will fail if no valid point is found after `max_tries`.
+
+        If `ignored_fixed_ref=True` (default: `False`), fixed reference values will be
+        ignored in favor of the full prior, ensuring some randomness for all parameters
+        (useful e.g. to prevent caching when measuring speeds).
+
+        Returns (point, logpost, logpriors, loglikes, derived)
+        """
+        for loop in range(max(1, max_tries // self.prior.d())):
+            initial_point = self.prior.reference(max_tries=max_tries,
+                                                 ignore_fixed=ignore_fixed_ref,
+                                                 warn_if_no_ref=not loop)
+            logpost, logpriors, loglikes, derived = self.logposterior(initial_point)
+            if -np.inf not in loglikes:
+                break
+        else:
+            if self.prior.reference_is_pointlike():
+                raise LoggedError(self.log, "The reference point provided has null "
+                                  "likelihood. Set 'ref' to a different point or a pdf.")
+            raise LoggedError(self.log, "Could not find random point giving finite "
+                                        "likelihood after %g tries", max_tries)
+        return initial_point, logpost, logpriors, loglikes, derived
+
     def dump_timing(self):
         """
         Prints the average computation time of the theory code and likelihoods.
@@ -451,10 +475,14 @@ class Model(HasLogger):
     def close(self):
         self.__exit__()
 
-    def get_version(self, add_version_field=False):
-        return dict(theory=self.theory.get_version(add_version_field=add_version_field),
-                    likelihood=self.likelihood.get_version(
+    def get_versions(self, add_version_field=False):
+        return dict(theory=self.theory.get_versions(add_version_field=add_version_field),
+                    likelihood=self.likelihood.get_versions(
                         add_version_field=add_version_field))
+
+    def get_speeds(self, ignore_sub=False):
+        return dict(theory=self.theory.get_speeds(ignore_sub=ignore_sub),
+                    likelihood=self.likelihood.get_speeds(ignore_sub=ignore_sub))
 
     def _set_component_order(self, components, dependencies):
         dependence_order = []
@@ -473,129 +501,149 @@ class Model(HasLogger):
                                             "%r" % comps)
             _last = len(dependence_order)
 
-        self._component_order = odict(zip(dependence_order, (components.index(c) for c in
-                                                             dependence_order)))
+        self._component_order = {c: components.index(c) for c in dependence_order}
 
-    def _set_dependencies_and_providers(self):
-        requirements = []
-        dependencies = {}
-        self._needs = {}
-        providers = {}
+    def _set_dependencies_and_providers(self, manual_requirements=empty_dict):
+        # TODO: does it matter that theories come first, or can we use self.components?
         components = list(self.theory.values()) + list(self.likelihood.values())
         direct_param_dependence = {c: set() for c in components}
 
-        def _tidy_requirements(_component, _require):
+        def _tidy_requirements(_require, _component=None):
             # take input requirement dictionary and split into list of tuples of
             # requirement names and requirement options
             if not _require:
                 return []
-            if isinstance(_require, (set, tuple, list)):
-                _require = {p: None for p in _require}
+            if isinstance(_require, Mapping):
+                _require = dict(_require)
             else:
-                _require = _require.copy()
+                _require = dict.fromkeys(_require)
+            # Save parameters dependence
             for par in self.input_params:
-                if par in _require:
+                if par in _require and _component is not None:
                     direct_param_dependence[_component].add(par)
                     # requirements that are sampled parameters automatically satisfied
                     _require.pop(par, None)
-
             return [Requirement(p, v) for p, v in _require.items()]
 
-        # Get the requirements and providers
+        ### 1. Get the requirements and providers ###
+        requirements = {}  # requirements of each component
+        providers = {}  # providers of each *available* requirement (requested or not)
         for component in components:
+            # MARKED FOR DEPRECATION IN v3.0
             if hasattr(component, "add_theory"):
                 raise LoggedError(self.log,
                                   "Please remove add_theory from %r and return "
                                   "requirement dictionary from get_requirements() "
                                   "instead" % component)
-            self._needs[component] = []
+            # END OF DEPRECATION BLOCK
             component.initialize_with_params()
-            requirements.append(
-                _tidy_requirements(component, component.get_requirements()))
-
-            methods = component.get_can_provide_methods()
-            can_provide = list(component.get_can_provide()) + list(methods)
-            # parameters that can be provided but not already explicitly assigned
+            requirements[component] = _tidy_requirements(
+                component.get_requirements(), component)
+            # Gather what this component can provide
+            can_provide = (
+                    list(component.get_can_provide()) +
+                    list(component.get_can_provide_methods()))
+            # Parameters that can be provided but not already explicitly assigned
+            # (i.e. it is not a declared output param of that component)
             provide_params = [p for p in component.get_can_provide_params() if
-                              p not in self.output_params and p not in
-                              str_to_list(getattr(component, _requires, []))]
-
+                              p not in self.output_params]
+            # Corner case: some components can either take some parameters as input OR
+            # provide their own calculation of them. Pop those if required as input.
+            for p in provide_params.copy():  # iterating over copy
+                if p in component.get_requirements():  # no need to know which are params
+                    provide_params.remove(p)
+            # Invert to get the provider(s) of each available product/parameter
             for k in can_provide + component.output_params + provide_params:
                 providers[k] = providers.get(k, []) + [component]
+        # Add requirements requested by hand
+        if manual_requirements:
+            requirements[None] = _tidy_requirements(manual_requirements)
 
+        ### 2. Assign each requirement to a provider ###
+        # store requirements assigned to each provider:
+        self._must_provide = {component: [] for component in components}
+        # inverse of the one above, *minus conditional requirements* --
+        # this is the one we need to initialise the provider
         requirement_providers = {}
-        has_more_requirements = True
-        while has_more_requirements:
-            # list of dictionary of needs for each component
-            needs = {c: [] for c in components}
-            # Check supplier for each requirement, get dependency and needs
-            for component, requires in zip(components, requirements):
+        dependencies = {}  # set of components of which each component depends
+        there_are_more_requirements = True
+        while there_are_more_requirements:
+            # temp list of dictionary of requirements for each component
+            must_provide = {c: [] for c in components}
+            # Check supplier for each requirement, get dependency and must_provide
+            for component, requires in requirements.items():
                 for requirement in requires:
                     suppliers = providers.get(requirement.name)
-                    if suppliers:
-                        supplier = None
-                        if len(suppliers) > 1:
-                            for sup in suppliers:
-                                provide = str_to_list(getattr(sup, 'provides', []))
-                                if requirement.name in provide:
-                                    if supplier:
-                                        raise LoggedError(self.log, "more than one "
-                                                                    "component provides"
-                                                                    " %s" %
-                                                          requirement.name)
-                                    supplier = sup
-                            if not supplier:
-                                raise LoggedError(self.log,
-                                                  "requirement %s is provided by more "
-                                                  "than one component: %s. Use 'provides'"
-                                                  " keyword to specify which provides it "
-                                                  % (requirement.name, suppliers))
-                        else:
-                            supplier = suppliers[0]
-                        if supplier is component:
-                            raise LoggedError(self.log,
-                                              "Component %r cannot provide %s to "
-                                              "itself!" % (component, requirement.name))
-                        requirement_providers[requirement.name] = supplier.get_provider()
-                        if requirement not in self._needs[supplier] + needs[supplier]:
-                            needs[supplier] += [requirement]
-                        dependencies[component] = \
-                            dependencies.get(component, set()) | {supplier}
+                    if not suppliers:
+                        raise LoggedError(
+                            self.log, "Requirement %s of %r is not provided by any "
+                                      "component", requirement.name, component)
+                    if len(suppliers) == 1:
+                        supplier = suppliers[0]
                     else:
-                        raise LoggedError(self.log,
-                                          "Requirement %s of %r is not provided by any "
-                                          "component" % (requirement.name, component))
-
-            # tell each component what it needs to calculate, and collect the
-            # conditional requirements for those needs
-            has_more_requirements = False
-            for component, requires in zip(components, requirements):
+                        supplier = None
+                        for sup in suppliers:
+                            provide = str_to_list(getattr(sup, 'provides', []))
+                            if requirement.name in provide:
+                                if supplier:
+                                    raise LoggedError(
+                                        self.log, "more than one component provides %s",
+                                        requirement.name)
+                                supplier = sup
+                        if not supplier:
+                            raise LoggedError(
+                                self.log, "requirement %s is provided by more than one "
+                                          "component: %s. Use 'provides' keyword to "
+                                          "specify which provides it",
+                                requirement.name, suppliers)
+                    if supplier is component:
+                        raise LoggedError(
+                            self.log, "Component %r cannot provide %s to itself!",
+                            component, requirement.name)
+                    requirement_providers[requirement.name] = supplier.get_provider()
+                    declared_requirements_for_this_supplier = \
+                        self._must_provide[supplier] + must_provide[supplier]
+                    if requirement not in declared_requirements_for_this_supplier:
+                        must_provide[supplier] += [requirement]
+                    dependencies[component] = \
+                        dependencies.get(component, set()) | {supplier}
+                    # Requirements per component excluding input params
+                    # -- saves some overhead in theory.check_cache_and_compute
+                    if component and requirement.name not in component.input_params and \
+                            requirement.options is None:
+                        component._input_params_extra.add(requirement.name)
+            # tell each component what it must provide, and collect the
+            # conditional requirements for those requests
+            there_are_more_requirements = False
+            for component, requires in requirements.items():
+                # empty the list of requirements, since they have already been assigned,
+                # and store here new (conditional) ones
                 requires[:] = []
-                if needs[component]:
-                    for need in needs[component]:
+                # .get here accounts for the null component of manual reqs
+                if must_provide.get(component, False):
+                    for request in must_provide[component]:
                         conditional_requirements = \
-                            _tidy_requirements(component,
-                                               component.needs(
-                                                   **{need.name: need.options}))
-                        self._needs[component].append(need)
+                            _tidy_requirements(
+                                component.must_provide(
+                                    **{request.name: request.options}), component)
+                        self._must_provide[component].append(request)
                         if conditional_requirements:
-                            has_more_requirements = True
+                            there_are_more_requirements = True
                             requires += conditional_requirements
             # set component compute order and raise error if circular dependence
             self._set_component_order(components, dependencies)
-
-        # always call needs at least once (#TODO is this needed? e.g. for post)
-        for component in components:
-            if not self._needs[component]:
-                component.needs()
-
+            # TODO: it would be nice that after this loop we, in some way, have
+            # component.get_requirements() return the conditional reqs actually used too,
+            # or maybe assign conditional used ones to a property?
+        # Expunge manual requirements
+        requirements.pop(None, None)
+        # Check that unassigned input parameters are at least required by some component
         if self._unassigned_input:
             self._unassigned_input.difference_update(*direct_param_dependence.values())
             if self._unassigned_input:
                 raise LoggedError(
                     self.log, "Could not find anything to use input parameter(s) %r.",
                     self._unassigned_input)
-
         if self.log.getEffectiveLevel() <= logging.DEBUG:
             self.log.debug("Components will be computed in the order:")
             self.log.debug(" - %r" % list(self._component_order))
@@ -607,24 +655,25 @@ class Model(HasLogger):
                 deps.update(dependencies_of(c))
             return deps
 
+        ### 3. Save dependencies on components and their parameters ###
         self._dependencies = {c: dependencies_of(c) for c in components}
-
-        self._ordered_param_dependence = [set() for _ in components]
+        # this next one is not a dict to save a lookup per iteration
+        self._params_of_dependencies = [set() for _ in self._component_order]
         for component, param_dep in zip(self._component_order,
-                                        self._ordered_param_dependence):
+                                        self._params_of_dependencies):
             param_dep.update(direct_param_dependence.get(component))
             for dep in self._dependencies.get(component, []):
-                param_dep.update(set(dep.input_params))
+                param_dep.update(
+                    set(dep.input_params).union(direct_param_dependence.get(dep)))
             param_dep -= set(component.input_params)
             if not len(component.input_params) and not param_dep \
                     and component.get_name() != 'one':
-                raise LoggedError(self.log, "Component '%r' seems not to depend on any "
-                                            "parameters (neither directly nor "
-                                            "indirectly)", component)
-
+                raise LoggedError(
+                    self.log, "Component '%r' seems not to depend on any parameters "
+                              "(neither directly nor indirectly)", component)
         # Store the input params and components on which each sampled params depends.
         sampled_input_dependence = self.parameterization.sampled_input_dependence()
-        sampled_dependence = odict((p, []) for p in sampled_input_dependence)
+        sampled_dependence = {p: [] for p in sampled_input_dependence}
         for p, i_s in sampled_input_dependence.items():
             for component in components:
                 if p in component.input_params or i_s and \
@@ -634,18 +683,22 @@ class Model(HasLogger):
                         if comp is not component and \
                                 component in self._dependencies.get(comp, []):
                             sampled_dependence[p].append(comp)
-
         self.sampled_dependence = sampled_dependence
 
-        if self.log.getEffectiveLevel() <= logging.DEBUG:
+        ### 4. Initialize the provider and pass it to each component ###
+        if self.log.getEffectiveLevel() <= logging.DEBUG and requirement_providers:
             self.log.debug("Requirements will be calculated by these components:")
             for requirement, provider in requirement_providers.items():
-                self.log.debug("- %s: %s" % (requirement, provider))
-
+                self.log.debug("- %s: %s", requirement, provider)
         self.provider = Provider(self, requirement_providers)
-
         for component in components:
             component.initialize_with_provider(self.provider)
+
+    def add_requirements(self, requirements):
+        """
+        Adds quantities to be computed by the pipeline, for testing purposes.
+        """
+        self._set_dependencies_and_providers(manual_requirements=requirements)
 
     def requested(self):
         """
@@ -654,7 +707,7 @@ class Model(HasLogger):
         :return: dictionary giving list of requirements calculated by
                 each component name
         """
-        return dict(("%r" % c, v) for c, v in self._needs.items() if v)
+        return dict(("%r" % c, v) for c, v in self._must_provide.items() if v)
 
     def _assign_params(self, info_likelihood, info_theory=None):
         """
@@ -663,39 +716,41 @@ class Model(HasLogger):
         """
         self.input_params = list(self.parameterization.input_params())
         self.output_params = list(self.parameterization.output_params())
-        params_assign = odict([
-            ("input", odict((p, []) for p in self.input_params)),
-            ("output", odict((p, []) for p in self.output_params))])
+        params_assign = {"input": {p: [] for p in self.input_params},
+                         "output": {p: [] for p in self.output_params}}
         agnostic_likes = {"input": [], "output": []}
-        # All components, doing likelihoods first so unassigned can by default
-        # go to theory
-        components = self.components
-        for kind, option, prefix, derived_param in (
+        # Go through all components.
+        # NB: self.components iterates over likelihoods first, and then theories
+        # so unassigned can by default go to theories
+        for io_kind, option, prefix, derived_param in (
                 ["input", _input_params, _input_params_prefix, False],
                 ["output", _output_params, _output_params_prefix, True]):
-            for component in components:
+            for component in self.components:
                 if isinstance(component, AbsorbUnusedParamsLikelihood):
                     # take leftover parameters
                     continue
                 if component.get_allow_agnostic():
                     supports_params = None
-                elif kind == 'output':
+                elif io_kind == 'output':
                     supports_params = set(component.get_can_provide_params())
                     provide = str_to_list(getattr(component, _provides, []))
                     supports_params |= set(provide)
                 else:
-                    supports_params = set(list(component.get_requirements())).union(
+                    required_params = set(
+                        p for p, v in ensure_dict(component.get_requirements()).items()
+                        # ignore non-params; it's ok if some non-param goes through
+                        if v is None)
+                    supports_params = required_params.union(
                         set(component.get_can_support_params()))
-
                 # Identify parameters understood by this likelihood/theory
                 # 1a. Does it have input/output params list?
                 #     (takes into account that for callables, we can ignore elements)
                 if getattr(component, option, None) is not None:
                     for p in getattr(component, option):
                         try:
-                            params_assign[kind][p] += [component]
+                            params_assign[io_kind][p] += [component]
                         except KeyError:
-                            if kind == "input":
+                            if io_kind == "input":
                                 # If external function, no problem: it may have
                                 # default value
                                 if not isinstance(component,
@@ -706,45 +761,44 @@ class Model(HasLogger):
                                         "but not provided.", p, component.name)
                 # 2. Is there a params prefix?
                 elif getattr(component, prefix, None) is not None:
-                    for p in params_assign[kind]:
+                    for p in params_assign[io_kind]:
                         if p.startswith(getattr(component, prefix)):
-                            params_assign[kind][p] += [component]
+                            params_assign[io_kind][p] += [component]
                 # 3. Does it have a general (mixed) list of params? (set from default)
                 elif getattr(component, _params, None):
                     for p, options in getattr(component, _params).items():
-                        if p in params_assign[kind]:
+                        if p in params_assign[io_kind]:
                             if not hasattr(options, 'get') or \
                                     options.get('derived',
                                                 derived_param) is derived_param:
-                                params_assign[kind][p] += [component]
+                                params_assign[io_kind][p] += [component]
                 # 4. otherwise explicitly supported?
                 elif supports_params:
                     # outputs this parameter unless explicitly told
                     # another component provides it
                     for p in supports_params:
-                        if p in params_assign[kind]:
+                        if p in params_assign[io_kind]:
                             if not any((c is not component and p in
                                         str_to_list(getattr(c, _provides, []))) for c in
-                                       components):
-                                params_assign[kind][p] += [component]
+                                       self.components):
+                                params_assign[io_kind][p] += [component]
                 # 5. No parameter knowledge: store as parameter agnostic
                 elif supports_params is None:
-                    agnostic_likes[kind] += [component]
-
+                    agnostic_likes[io_kind] += [component]
             # Check that there is only one non-knowledgeable element, and assign
             # unused params
-            if len(agnostic_likes[kind]) > 1 and not all(params_assign[kind].values()):
+            if (len(agnostic_likes[io_kind]) > 1 and not all(
+                    params_assign[io_kind].values())):
                 raise LoggedError(
                     self.log, "More than one parameter-agnostic likelihood/theory "
                               "with respect to %s parameters: %r. Cannot decide "
-                              "parameter assignments.", kind, agnostic_likes)
-            elif agnostic_likes[kind]:  # if there is only one
-                component = agnostic_likes[kind][0]
-                for p, assigned in params_assign[kind].items():
+                              "parameter assignments.", io_kind, agnostic_likes)
+            elif agnostic_likes[io_kind]:  # if there is only one
+                component = agnostic_likes[io_kind][0]
+                for p, assigned in params_assign[io_kind].items():
                     if not assigned or not derived_param and \
-                            p in getattr(component, _requires, []):
-                        params_assign[kind][p] += [component]
-
+                            p in component.get_requirements():
+                        params_assign[io_kind][p] += [component]
         # If unit likelihood is present, assign all unassigned inputs to it
         for like in self.likelihood.values():
             if isinstance(like, AbsorbUnusedParamsLikelihood):
@@ -753,31 +807,38 @@ class Model(HasLogger):
                         assigned.append(like)
                 break
         # If there are unassigned input params, check later that they are used by
-        # requirements of a component (and if not raise error)
+        # *conditional* requirements of a component (and if not raise error)
         self._unassigned_input = set(p for p, assigned in params_assign["input"].items()
                                      if not assigned)
-
-        # Assign the "chi2__" output parameters
+        # Remove aggregated chi2 that may have been picked up by an agnostic component
+        aggr_chi2_names = [_get_chi2_name(t) for t in self.likelihood.all_types]
+        for p in aggr_chi2_names:
+            params_assign["output"].pop(p, None)
+        # Assign the single-likelihood "chi2__" output parameters
         for p in params_assign["output"]:
-            if p.startswith(_chi2 + _separator):
-                like = p[len(_chi2 + _separator):]
-                if like not in [l.replace(".", "_") for l in self.likelihood]:
+            if p.startswith(_get_chi2_name("")):
+                if p in aggr_chi2_names:
+                    continue  # it's an aggregated likelihood
+                like = p[len(_get_chi2_name("")):]
+                if like not in [lik.replace(".", "_") for lik in self.likelihood]:
                     raise LoggedError(
                         self.log, "Your derived parameters depend on an unknown "
                                   "likelihood: '%s'", like)
                 # They may have been already assigned to an agnostic likelihood,
                 # so purge first: no "=+"
                 params_assign["output"][p] = [self.likelihood[like]]
-        # Check that output parameters are assigned exactly once
+        # Check that there are no unassigned parameters (with the exception of aggr chi2)
         unassigned_output = [
-            p for p, assigned in params_assign["output"].items() if not assigned]
-        multiassigned_output = {
-            p: assigned for p, assigned in params_assign["output"].items()
-            if len(assigned) > 1}
+            p for p, assigned in params_assign["output"].items()
+            if not assigned and p not in aggr_chi2_names]
         if unassigned_output:
             raise LoggedError(
                 self.log, "Could not find whom to assign output parameters %r.",
                 unassigned_output)
+        # Check that output parameters are assigned exactly once
+        multiassigned_output = {
+            p: assigned for p, assigned in params_assign["output"].items()
+            if len(assigned) > 1}
         if multiassigned_output:
             raise LoggedError(
                 self.log,
@@ -785,15 +846,13 @@ class Model(HasLogger):
                 "but some were claimed by more than one: %r.",
                 multiassigned_output)
         # Finished! Assign and update infos
-        for kind, option, attr in (
+        for io_kind, option, attr in (
                 ["input", _input_params, "input_params"],
                 ["output", _output_params, "output_params"]):
-            for component in components:
-                # set component's input_params and output_params
+            for component in self.components:
                 setattr(component, attr,
-                        [p for p, assign in params_assign[kind].items() if
+                        [p for p, assign in params_assign[io_kind].items() if
                          component in assign])
-            for component in components:
                 # Update infos! (helper theory parameters stored in yaml with host)
                 inf = (info_theory, info_likelihood)[
                     component in self.likelihood.values()]
@@ -801,10 +860,9 @@ class Model(HasLogger):
                 if inf:
                     inf.pop(_params, None)
                     inf[option] = component.get_attr_list_with_helpers(attr)
-
         if self.log.getEffectiveLevel() <= logging.DEBUG:
             self.log.debug("Parameters were assigned as follows:")
-            for component in components:
+            for component in self.components:
                 self.log.debug("- %r:", component)
                 self.log.debug("     Input:  %r", component.input_params)
                 self.log.debug("     Output: %r", component.output_params)
@@ -813,98 +871,118 @@ class Model(HasLogger):
     def components(self):
         return list(chain(self.likelihood.values(), self.theory.values()))
 
-    def _speeds_of_params(self, int_speeds=False):
+    def get_param_blocking_for_sampler(self, split_fast_slow=False, oversample_power=0):
         """
-        Separates the sampled parameters in blocks according to the likelihood (or theory)
-        re-evaluation that changing each one of them involves. Using the approximate speed
-        (i.e. inverse evaluation time in seconds) of each likelihood, sorts the blocks in
-        an optimal way, in ascending order of speed *per full block iteration*.
+        Separates the sampled parameters in blocks according to the component(s)
+        re-evaluation(s) that changing each one of them involves. Then sorts these blocks
+        in an optimal way using the speed (i.e. inverse evaluation time in seconds)
+        of each component.
 
-        Returns tuples of ``(speeds), (params_in_block)``, sorted by ascending speeds,
-        where speeds are *per param* (though optimal blocking is chosen by speed
-        *per full block*).
+        Returns tuples of ``(params_in_block), (oversample_factor)``,
+        sorted by descending variation cost-per-parameter.
 
-        If ``int_speeds=True``, returns integer speeds, instead of speeds in 1/s.
+        Set ``oversample_power`` to some value between 0 and 1 to control the amount of
+        oversampling (default: 0 -- no oversampling). If close enough to 1, it chooses
+        oversampling factors such that the same amount of time is spent in each block.
 
+        If ``split_fast_slow=True``, it separates blocks in two sets, only the second one
+        having an oversampling factor >1. In that case, the oversampling factor should be
+        understood as the total one for all the fast blocks.
         """
-        # Fill unknown speeds with the value of the slowest one`, and clip with overhead
-        components = self.components
-        speeds = np.array([component.get_speed() for component in components],
-                          dtype=np.float64)
-        # Add overhead to the defined ones, and clip to the slowest the undefined ones
-        speeds[speeds > 0] = (speeds[speeds > 0] ** -1 + self.overhead) ** -1
+        # Get a list of components and their speeds
+        speeds = {c.get_name(): getattr(c, "speed", -1) for c in self.components}
+        # Add overhead to defined ones (positives)
+        # and clip undefined ones to the slowest one
         try:
-            speeds = np.clip(speeds, min(speeds[speeds > 0]), None)
+            min_speed = min(speed for speed in speeds.values() if speed > 0)
         except ValueError:
-            # No speeds specified
-            speeds = np.ones(len(speeds))
-        for i, component in enumerate(components):
-            component.speed = speeds[i]
+            # No speeds defined <-- empty sequence passed to min
+            min_speed = 1
+        for comp in speeds:
+            speeds[comp] = max(speeds[comp], min_speed)
+            # For now, overhead is constant re # params and very small
+            speeds[comp] = (speeds[comp] ** -1 + self.overhead) ** -1
         # Compute "footprint"
         # i.e. likelihoods (and theory) that we must recompute when each parameter changes
-        footprints = np.zeros((len(self.sampled_dependence), len(components)), dtype=int)
-        for i, deps in enumerate(self.sampled_dependence.values()):
-            for j, component in enumerate(components):
-                footprints[i, j] = component in deps
+        footprints = np.zeros((len(self.sampled_dependence), len(speeds)), dtype=int)
+        sampled_dependence_names = {k: [c.get_name() for c in v] for
+                                    k, v in self.sampled_dependence.items()}
+        for i, ls in enumerate(sampled_dependence_names.values()):
+            for j, comp in enumerate(speeds):
+                footprints[i, j] = comp in ls
         # Group parameters by footprint
         different_footprints = list(set(tuple(row) for row in footprints.tolist()))
         blocks = [[p for ip, p in enumerate(self.sampled_dependence)
                    if all(footprints[ip] == fp)] for fp in different_footprints]
-        # Find optimal ordering, such that one minimises the time it takes to vary every
-        # parameter, one by one, in a basis in which they are mixed-down (i.e after a
-        # Cholesky transformation)
-        # To do that, compute that "total cost" for every permutation of the blocks order,
-        # and find the minimum.
-        n_params_per_block = np.array([len(b) for b in blocks])
-        self._costs = 1 / np.array(speeds)
-        self._footprints = np.array(different_footprints)
-        self._lower = np.tri(len(n_params_per_block))
+        # a) Multiple blocks
+        if not split_fast_slow:
+            i_optimal_ordering, costs, oversample_factors = sort_parameter_blocks(
+                blocks, np.array(list(speeds.values()), dtype=np.float),
+                different_footprints, oversample_power=oversample_power)
+            blocks_sorted = [blocks[i] for i in i_optimal_ordering]
+        # b) 2-block slow-fast separation
+        else:
+            if len(blocks) == 1:
+                raise LoggedError(self.log, "Requested fast/slow separation, "
+                                            "but all parameters have the same speed.")
+            # First sort them optimally (w/o oversampling)
+            i_optimal_ordering, costs, oversample_factors = sort_parameter_blocks(
+                blocks, np.array(list(speeds.values()), dtype=np.float),
+                different_footprints, oversample_power=0)
+            blocks_sorted = [blocks[i] for i in i_optimal_ordering]
+            footprints_sorted = np.array(different_footprints)[list(i_optimal_ordering)]
+            # Then, find the split that maxes cost LOG-differences.
+            # Since costs are already "accumulated down",
+            # we need to subtract those below each one
+            costs_per_block = costs - np.concatenate([costs[1:], [0]])
+            # Split them so that "adding the next block to the slow ones" has max cost
+            log_differences = np.log(costs_per_block[:-1]) - np.log(costs_per_block[1:])
+            i_last_slow = np.argmax(log_differences)
+            blocks_split = (lambda l: [list(chain(*l[:i_last_slow + 1])),
+                                       list(chain(*l[i_last_slow + 1:]))])(blocks_sorted)
+            footprints_split = (
+                    [np.array(footprints_sorted[:i_last_slow + 1]).sum(axis=0)] +
+                    [np.array(footprints_sorted[i_last_slow + 1:]).sum(axis=0)])
+            footprints_split = np.clip(np.array(footprints_split), 0, 1)
+            # Recalculate oversampling factor with 2 blocks
+            _, _, oversample_factors = sort_parameter_blocks(
+                blocks_split, np.array(list(speeds.values()), dtype=np.float),
+                footprints_split, oversample_power=oversample_power)
+            # If no oversampling, slow-fast separation makes no sense: warn and set to 2
+            if oversample_factors[1] == 1:
+                min_factor = 2
+                self.log.warning(
+                    "Oversampling would be trivial due to small speed difference or "
+                    "small `oversample_power`. Set to %d.", min_factor)
+            # Finally, unfold `oversampling_factors` to have the right number of elements,
+            # taking into account that that of the fast blocks should be interpreted as a
+            # global one for all of them.
+            # NB: the int() below forces the copy of the factors.
+            #     Otherwise the yaml_representer prints references to a single object.
+            oversample_factors = (
+                    [int(oversample_factors[0])] * (1 + i_last_slow) +
+                    [int(oversample_factors[1])] * (len(blocks) - (1 + i_last_slow)))
+            self.log.debug("Doing slow/fast split. The oversampling factors for the fast "
+                           "blocks should be interpreted as a global one for all of them")
+        self.log.debug(
+            "Cost, oversampling factor and parameters per block, in optimal order:")
+        for c, o, b in zip(costs, oversample_factors, blocks_sorted):
+            self.log.debug("* %g : %r : %r", c, o, b)
+        return blocks_sorted, oversample_factors
 
-        def get_cost_per_param_per_block(ordering):
-            """
-            Computes cumulative cost per parameter for each block, given ordering.
-            """
-            footprints_chol = np.minimum(
-                1, self._footprints[ordering].T.dot(self._lower).T)
-            return footprints_chol.dot(self._costs)
-
-        orderings = list(permutations(np.arange(len(n_params_per_block))))
-        costs_per_param_per_block = np.array(
-            [get_cost_per_param_per_block(list(o)) for o in orderings])
-        total_costs = np.array(
-            [n_params_per_block[list(o)].dot(costs_per_param_per_block[i])
-             for i, o in enumerate(orderings)])
-        i_optimal = np.argmin(total_costs)
-        optimal_ordering = orderings[i_optimal]
-        blocks = [blocks[i] for i in optimal_ordering]
-        costs_per_param_per_block = costs_per_param_per_block[i_optimal]
-        # This costs are *cumulative-down* (i.e. take into account the cost of varying the
-        # parameters below the present one). Subtract that effect so that its inverse,
-        # the speeds, are equivalent to oversampling factors
-        costs_per_param_per_block[:-1] -= costs_per_param_per_block[1:]
-        params_speeds = 1 / costs_per_param_per_block
-        if int_speeds:
-            # Oversampling precision: smallest difference in oversampling to be ignored.
-            speed_precision = 1 / 10
-            speeds = np.array(np.round(np.array(
-                params_speeds) / min(params_speeds) / speed_precision), dtype=int)
-            params_speeds = np.array(
-                speeds / np.ufunc.reduce(np.frompyfunc(gcd, 2, 1), speeds), dtype=int)
-        self.log.debug("Optimal ordering of parameter blocks: %r with speeds %r",
-                       blocks, params_speeds)
-        return params_speeds, blocks
-
-    def _check_speeds_of_params(self, blocking):
+    def check_blocking(self, blocking):
         """
-        Checks the correct formatting of the given parameter blocking.
+        Checks the correct formatting of the given parameter blocking and oversampling:
+        that it consists of tuples `(oversampling_factor, (param1, param2, etc))`, with
+        growing oversampling factors, and containing all parameters.
 
-        `blocking` is a list of tuples `(speed, (param1, param2, etc))`.
+        Returns the input, once checked as ``(blocks), (oversampling_factors)``.
 
-        Returns tuples of ``(speeds), (params_in_block)``.
+        If ``draggable=True`` (default: ``False``), checks that the oversampling factors
+        are compatible with dragging.
         """
         try:
-            speeds, blocks = zip(*list(blocking))
-            speeds = np.array(speeds)
+            oversampling_factors, blocks = zip(*list(blocking))
         except:
             raise LoggedError(
                 self.log, "Manual blocking not understood. Check documentation.")
@@ -923,35 +1001,39 @@ class Model(HasLogger):
         if unknown:
             raise LoggedError(
                 self.log, "Manual blocking: unknown parameters: %r", unknown)
-        if (speeds != np.sort(speeds)).all():
+        oversampling_factors = np.array(oversampling_factors)
+        if (oversampling_factors != np.sort(oversampling_factors)).all():
             self.log.warning(
                 "Manual blocking: speed-blocking *apparently* non-optimal: "
-                "sort by ascending speed when possible")
-        return speeds, blocks
+                "oversampling factors must go from small (slow) to large (fast).")
+        return blocks, oversampling_factors
 
     def set_cache_size(self, n_states):
         """
         Sets the number of different parameter points to cache for all theories
-        and likelihood.
+        and likelihoods.
 
         :param n_states: number of cached points
         """
         for theory in self.components:
             theory.set_cache_size(n_states)
 
-    def get_auto_covmat(self, params_info):
+    def get_auto_covmat(self, params_info=None):
         """
         Tries to get an automatic covariance matrix for the current model and data.
 
-        ``params_info`` should contain preferably the slow parameters only.
+        ``params_info`` should include the set of parameters for which the covmat will be
+        searched (default: None, meaning all sampled parameters).
         """
-        likes_renames = {like.get_name(): {_aliases: getattr(like, _aliases, [])}
-                         for like in self.likelihood.values()}
+        if params_info is None:
+            params_info = self.parameterization.sampled_params_info()
         try:
             for theory in self.theory.values():
                 if hasattr(theory, 'get_auto_covmat'):
-                    return theory.get_auto_covmat(params_info, likes_renames)
-        except:
+                    return theory.get_auto_covmat(
+                        params_info, self.info()[kinds.likelihood])
+        except Exception as e:
+            self.log.warning("Something went wrong when looking for a covmat: %r", str(e))
             return None
 
     def set_timing_on(self, on):
@@ -959,27 +1041,38 @@ class Model(HasLogger):
         for component in self.components:
             component.set_timing_on(on)
 
-    def set_measured_speeds(self, test_point, speeds=None):
-        if not speeds:
-            timing_on = self.timing
-            if not timing_on:
-                self.set_timing_on(True)
-            self.log.debug("measuring speeds")
-            # call all components (at least) a second time
-            test_point *= 1.00001
-            self.loglikes(test_point, cached=False)
-            times = [component.timer.get_time_avg() for component in self.components]
-            if more_than_one_process():
-                # average for different points
-                times = np.average(get_mpi_comm().allgather(times), axis=0)
-            self._measured_speeds = [1 / (1e-7 + time) for time in times]
-            self.mpi_info('Setting measured speeds (per sec): %r',
-                          {component: float("%.3g" % speed) for component, speed in
-                           zip(self.components, self._measured_speeds)})
-            if not timing_on:
-                self.set_timing_on(False)
-        else:
-            self._measured_speeds = speeds
-        for component, speed in zip(self.components, self._measured_speeds):
+    def measure_and_set_speeds(self, n=None, discard=1, max_tries=np.inf):
+        """
+        Measures the speeds of the different components (theories and likelihoods). To do
+        that it evaluates the posterior at `n` points (default: 1 per MPI process, or 3 if
+        single process), discarding `discard` points (default: 1) to mitigate possible
+        internal caching.
+
+        Stops after encountering `max_tries` points (default: inf) with non-finite
+        posterior.
+        """
+        timing_on = self.timing
+        if not timing_on:
+            self.set_timing_on(True)
+        self.mpi_info("Measuring speeds... (this may take a few seconds)")
+        if n is None:
+            n = 1 if more_than_one_process() else 3
+        n_done = 0
+        while n_done < int(n) + int(discard):
+            point = self.prior.reference(
+                max_tries=max_tries, ignore_fixed=True, warn_if_no_ref=False)
+            if self.loglike(point, cached=False, return_derived=False) != -np.inf:
+                n_done += 1
+        self.log.debug("Computed %d points to measure speeds.", n_done)
+        times = [component.timer.get_time_avg() for component in self.components]
+        if more_than_one_process():
+            # average for different points
+            times = np.average(get_mpi_comm().allgather(times), axis=0)
+        measured_speeds = [1 / (1e-7 + time) for time in times]
+        self.mpi_info('Setting measured speeds (per sec): %r',
+                      {component: float("%.3g" % speed) for component, speed in
+                       zip(self.components, measured_speeds)})
+        if not timing_on:
+            self.set_timing_on(False)
+        for component, speed in zip(self.components, measured_speeds):
             component.set_measured_speed(speed)
-        return self._measured_speeds

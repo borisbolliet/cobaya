@@ -4,7 +4,7 @@ Likelihoods
 Input: specifying likelihoods to explore
 ----------------------------------------
 
-Likelihoods are specified under the `likelihood` block, together with their options:
+Likelihoods are specified under the `likelihood` block of your input .yaml file, together with their options:
 
 .. code-block:: yaml
 
@@ -20,15 +20,16 @@ Likelihood parameters are specified within the ``params`` block, as explained in
 
 **cobaya** comes with a number of *internal* general and cosmological likelihoods.
 You can also define your *external* likelihoods with simple Python functions, or by implementing a Python class
-defined in an external module.
+defined in an external module. If your likelihood is just a simple Python functions, using an external function can be convenient.
+Any likelihood using data files or with more complex dependencies is best implemented as a new likelihood class.
 
 
 .. _likelihood_external:
 
-*External* likelihoods: how to quickly define your own functions
-----------------------------------------------------------------
+External likelihood functions
+---------------------------------
 
-*External* likelihood functions are defined as:
+External likelihood functions can be used by using input of the form:
 
 .. code:: yaml
 
@@ -43,31 +44,73 @@ defined in an external module.
 
 The ``[definition]`` follows the exact same rules as :ref:`external priors <prior_external>`, so check out that section for the details.
 
-The only difference with external priors is that external likelihoods can provide **derived** parameters. This can only be achieved using a ``def``'ed function (as opposed to a ``lambda`` one. To do that:
+The only difference with external priors is that external likelihoods can provide **derived** parameters. To do that:
 
-1. In your function definition, define a *keyword* argument ``_derived`` with a list of derived parameter names as the default value.
-2. Inside the function, assume that you have been passed a dictionary through the keyword ``_derived`` and **update** it with the derived parameter values corresponding to the input files.
+1. In your function, return a tuple of the log-likelihood and a dictionary of derived parameter values ``{derived_1: value_1, [...]}``.
+2. When preparing Cobaya's input, add to your external likelihood info an option ``output_params`` listing the names of the available derived parameters.
 
 For an application, check out the :ref:`advanced example <example_advanced_likderived>`.
 
 If your external likelihood needs the products of a **theory code**:
 
-1. In your function definition, define a *keyword* argument ``_theory`` with a default value stating the *needs* of your theory code, i.e. the argument that will be passed to the ``needs`` method of the theory code, to let it know what needs to be computed at every iteration.
-2. At runtime, the current theory code instance will be passed through that keyword, so you can use it to invoke the methods that return the necessary products.
+1. In your function definition, define a *keyword* argument ``_self`` through which at runtime you will get accesst to an instance of the Cobaya likelihood wrapper of your function.
+2. When preparing Cobaya's input, add to your external likelihood info an option ``requires`` stating the requirements of your likelihood.
+3. At run-time, you can call ``get_[...]`` methods of ``_self.provider`` to get the requested quantities.
 
 For an application, check out :doc:`cosmo_external_likelihood`.
 
-.. note:: Obviously, ``_derived`` and ``_theory`` are reserved parameter names that you cannot use as arguments in your likelihood definition, except for the purposes explained above.
+.. note::
+
+   Obviously, ``_theory`` is a reserved parameter name that you cannot use as an argument in your likelihood definition, except for the purposes explained above.
+
+.. note::
+
+   The input parameters of an external function are guessed from its definition. But in some cases you may prefer not to define your likelihood function with explicit arguments (e.g. if the number of them may vary). In that case, you can manually specify the input parameters via the ``input_params`` option of the likelihood definition in your input dictionary.
+
+   E.g. the following two snippets are equivalent, but in the second one, one can alter the input parameters programmatically:
+
+   .. code:: Python
+
+      # Default: guessed from function signature
+
+      def my_like(a0, a1):
+          logp =  # some function of `(a0, a1)`
+          devived = {"sum_a": a0 + a1}
+          return logp, derived
+
+      info_like = {"my_likelihood": {
+          "external": my_like, "output_params": ["sum_a"]}}
+
+   .. code:: Python
+
+      # Manual: no explicit function signature required
+
+      # Define the lists of input params
+      my_input_params = ["a0", "a1"]
+
+      def my_like(**kwargs):
+          current_input_values = [kwargs[p] for p in my_input_params]
+          logp =  # some function of the input params
+          derived = {"sum_a": sum(current_input_values)}
+          return logp, derived
+
+      info_like = {"my_likelihood": {
+          "external": my_like,
+          "input_params": my_input_params, "output_params": ["sum_a"]}}
 
 
-*Internal* likelihoods: code conventions and defaults
------------------------------------------------------
+.. _likelihood_classes:
 
-*Internal* likelihoods are defined inside the ``likelihoods`` directory of the source tree, where each subdirectory defines
-a subpackage containing one or more likelihoods. Each likelihood inherits from the :class:`.likelihood.Likelihood` class (see below).
-The subpackage contains at least two files:
+Likelihood classes: code conventions and defaults
+-------------------------------------------------
 
-- the standard Python subpackage ``__init__.py`` file
+Each likelihood inherits from the :class:`.likelihood.Likelihood` class (see below).
+
+*Internal* likelihoods are defined inside the ``likelihoods`` directory of the Cobaya source tree, where each subdirectory defines
+a subpackage containing one or more likelihoods. *External* likelihood classes can be defined in an external python package.
+
+In addition to the likelihood class itself, each likelihood can have additional files:
+
 - a ``[ClassName].yaml`` file containing allowed options for each likelihood and the default *experimental model*:
 
   .. code-block:: yaml
@@ -92,11 +135,14 @@ The subpackage contains at least two files:
 
 .. note::
 
-   Actually, there are some user-defined options that are common to all likelihoods and do not need to be specified in the defaults ``[ClassName].yaml`` file, such as the computational ``speed`` of the likelihood (see :ref:`mcmc_speed_hierarchy`).
+   Likelihood class options are inherited from any ancestor class .yaml files or class attributes.
+   So there are some user-defined options that are common to all likelihoods and do not need to be specified in the defaults ``[ClassName].yaml`` file, such as the computational ``speed`` of the likelihood (see :ref:`mcmc_speed_hierarchy`).
 
 
-It is up to you where to define your likelihood class(es): the ``__init__`` file can define a class [ClassName] directly, or you can define
-a class in a module.py file inside the likelihood directory (subpackage).
+It is up to you where to define your likelihood class(es): the ``__init__`` file can define a class [ClassName] directly, or you can define a class in a ``module.py`` file inside the likelihood directory (subpackage).
+
+Using an *internal* likelihood class
+------------------------------------
 
 Assuming your ``__init__`` file defines the class, or imports it (``from .module_name import ClassName``),
 when running Cobaya you can reference the internal likelihood using:
@@ -119,35 +165,10 @@ If you defined the class in *module_name.py* then you would reference it as
 
 If the class name is the same as the module name it can be omitted.
 
+Using an *external* likelihood class
+------------------------------------
 
-
-Implementing your own *internal* likelihood
--------------------------------------------
-
-Even if defining likelihoods with simple Python functions is easy, you may want to create a new *internal*-like likelihood to incorporate to your fork of **cobaya**, or to suggest us to include it in the main source.
-
-Since cobaya was created to be flexible, creating your own likelihood is very easy: simply create a folder with its name under ``likelihoods`` in the source tree and follow the conventions explained above for *internal* likelihoods. Options defined in the ``[ClassName].yaml`` are automatically accessible as attributes of your likelihood class at runtime.
-
-You only need to specify one, or at most four, functions (see the :class:`.likelihood.Likelihood` class documentation below):
-
-- A ``logp`` method taking a dictionary of (sampled) parameter values and returning a log-likelihood.
-- An (optional) ``initialize`` method preparing any computation, importing any necessary code, etc.
-- An (optional) ``get_requirements`` method returning dictionary of requests from the theory code, if needed.
-- An (optional) ``close`` method doing whatever needs to be done at the end of the sampling (e.g. releasing memory).
-
-You can use the :doc:`Gaussian mixtures likelihood <likelihood_gaussian_mixture>` as a guide. If your likelihood needs a cosmological code, just define one in the input file and you can automatically access it as an attribute of your class: ``[your_likelihood].theory``. Use the :doc:`Planck likelihood <likelihood_planck>` as a guide to create your own cosmological likelihood.
-
-.. note:: ``_theory`` and ``_derived`` are reserved parameter names: you cannot use them as options in your defaults file!
-
-For an application, check out :doc:`cosmo_external_likelihood_class`.
-
-Implementing your own *external* likelihood class
---------------------------------------------------
-
-Instead of including the likelihood within the standard Cobaya likelihood modules, you may wish to make an external
-package that can be redistributed easily. To do this you make a package containing a class defined exactly the same way
-as for internal likelihoods above (inheriting from :class:`Likelihood` as documented below). For example if you have a
-package called *mycodes*, containing a likelihood class called MyLike in *mycodes.mylikes*, when running Cobaya you can
+If you have a package called *mycodes*, containing a likelihood class called MyLike in *mycodes.mylikes*, when running Cobaya you can
 use the input
 
   .. code-block:: yaml
@@ -168,9 +189,39 @@ You can also specify an explicit path for the module, e.g.
          [option 1]: [value 1]
          [...]
 
+If MyLike is imported by your package ``__init__`` you can also simply reference it as ``mycodes.MyLike``.
+
+Implementing your own likelihood class
+--------------------------------------
+
+For your likelihood class you just need to define a few standard class methods:
+
+- A :meth:`~likelihood.Likelihood.logp` method taking a dictionary of (sampled) parameter values and returning a log-likelihood.
+- An (optional) :meth:`~theory.Theory.initialize` method preparing any computation, importing any necessary code, etc.
+- An (optional) :meth:`~theory.Theory.get_requirements` method returning dictionary of requests from a theory code component, if needed.
+
+The latter two methods are standard for all Likelihood and Theory components, and are inherited from the base :class:`~theory.Theory` class.
+There are also a number of other methods that you can also implement for more advanced usage.
+
+Options defined in the ``[ClassName].yaml`` are automatically accessible as attributes of your likelihood class at runtime, with values that can be overridden by the
+input .yaml file used for the run. If you prefer you can also define class attributes directly, rather than using a .yaml file
+(private class attributes that cannot be changed by input parameters should start with an underscore). If you define parameters in the .yaml you may also want to define
+their type in the Python source by adding an annotation, which will make it easier to perform automated checks on your code.
+
 For an example class implementation and how to support data file auto-installation, check out :doc:`cosmo_external_likelihood_class`.
 There is also a simple `external likelihood package <https://github.com/CobayaSampler/example_external_likelihood>`_
 and a real-word cosmology example in the `sample external CMB likelihood <https://github.com/CobayaSampler/planck_lensing_external>`_.
+You could also use the :doc:`Gaussian mixtures likelihood <likelihood_gaussian_mixture>` as a guide.
+
+A likelihood package becomes an *internal* likelihood if you move it into Cobaya's ``likelihoods`` directory, but usually this is not necessary.
+Keeping your likelihood in a separate packages makes it easier to separately update the codes , and you can their easily publicly distribute your likelihood package
+(just having Cobaya as a package requirement).
+
+If your likelihood depends on the calculation of some specific observable (typically depending on input parameters), you may want to split the calculation of the observable
+into a separate :class:`~theory.Theory` class. This would allow different likelihoods to share the same theory calculation result, and also allow speed optimization if computing the likelihood
+is much faster than calculating the observables that it depends on.
+To understand how to make your own Theory and Likelihood classes, and handle dependencies between then, see :doc:`theories_and_dependencies`.
+
 
 Likelihood module
 -----------------
@@ -182,7 +233,6 @@ Likelihood class
 ^^^^^^^^^^^^^^^^
 
 .. autoclass:: likelihood.Likelihood
-   :show-inheritance:
    :members:
 
 Likelihood interface

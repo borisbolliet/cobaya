@@ -11,9 +11,10 @@ nlive: 25d
 # Helps with curved degeneracies and thin "corners".
 # Recommended: '5d' if accurate evidences needed or weird posterior shapes.
 # You may want to use `d` for exploratory runs.
-num_repeats: 5d
+num_repeats: 2d
 # Number of prior samples drawn before starting compression
-nprior:  # default: nlive
+# Can be in units of nlive (but not dimension) as Xnlive
+nprior: 10nlive
 # Whether to check for and explore multi-modality on the posterior
 do_clustering: True
 # Stopping criterion: fraction of the total evidence contained in the live points
@@ -33,6 +34,15 @@ logzero: -1e30
 boost_posterior: 0  # increase up to `num_repeats`
 # Verbosity during the sampling process. Set to one of [0,1,2,3]
 feedback:  # default: Same as global `verbosity`
+# Exploiting speed hierarchy
+# --------------------------
+# whether to measure actual speeds for your machine/threading at starting rather
+# than using stored values
+measure_speeds: True
+# Amount of oversampling of each parameter block, relative to their speeds
+# Value from 0 (no oversampling) to 1 (spend the same amount of time in all blocks)
+# Can be larger than 1 if extra oversampling of fast blocks required.
+oversample_power: 0.4
 # Manual speed blocking
 # ---------------------
 # To take full advantage of speed-blocking, sort the blocks by ascending speeds
@@ -49,7 +59,6 @@ confidence_for_unbounded: 0.9999995  # 5 sigmas of the prior
 seed:  # postitive integer
 # Raw output of PolyChord (no need to change them, normally)
 # ----------------------------------------------------------
-base_dir: raw_polychord_output
 file_root:
 posteriors: True
 equals: True
@@ -59,4 +68,3 @@ read_resume: True
 write_stats: True
 write_live: True
 write_dead: True
-
