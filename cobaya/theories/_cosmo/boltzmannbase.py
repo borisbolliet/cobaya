@@ -129,41 +129,11 @@ class BoltzmannBase(Theory):
         for k, v in requirements.items():
             # Products and other computations
             if k == "Cl":
-# <<<<<<< HEAD
-#                 self._needs["Cl"] = {
-#                     cl: max(self._needs.get("Cl", {}).get(cl, 0), v.get(cl, 0))
-#                     for cl in set(self._needs.get("Cl", {})).union(v)}
-#             elif k == "Cl_sz":
-#                 self._needs["Cl_sz"] = self._needs.get("Cl_sz", {})
-#             elif k in ["Pk_interpolator", "Pk_grid"]:
-#                 # Make sure vars_pairs is a list of [list of 2 vars pairs]
-#                 vars_pairs = v.pop("vars_pairs", [])
-#                 try:
-#                     if isinstance(vars_pairs[0], string_types):
-#                         vars_pairs = [vars_pairs]
-#                 except IndexError:
-#                     # Empty list: default to *total matter*: CMB + Baryon + MassiveNu
-#                     vars_pairs = [2 * ["delta_tot"]]
-#                 except:
-#                     raise LoggedError(
-#                         self.log,
-#                         "Cannot understands vars_pairs '%r' for P(k) interpolator",
-#                         vars_pairs)
-#                 vars_pairs = set([tuple(pair) for pair in chain(
-#                     self._needs.get(k, {}).get("vars_pairs", []), vars_pairs)])
-#                 v["nonlinear"] = bool(v.get("nonlinear", True))
-#                 self._needs[k] = {
-#                     "z": np.unique(np.concatenate(
-#                         (self._needs.get(k, {}).get("z", []),
-#                          np.atleast_1d(v["z"])))),
-#                     "k_max": max(
-#                         self._needs.get(k, {}).get("k_max", 0), v["k_max"]),
-#                     "vars_pairs": vars_pairs}
-#                 self._needs[k].update(v)
-# =======
                 current = self._must_provide.get(k, {})
                 self._must_provide[k] = {cl: max(current.get(cl, 0), v.get(cl, 0))
                                          for cl in set(current).union(v)}
+            elif k == "Cl_sz":
+                self._must_provide["Cl_sz"] = self._must_provide.get("Cl_sz", {})
             elif k == 'sigma_R':
                 self._check_args(k, v, ('z', 'R'))
                 for pair in self._norm_vars_pairs(v.pop("vars_pairs", []), k):
@@ -193,7 +163,6 @@ class BoltzmannBase(Theory):
                             z=np.unique(np.concatenate((current.get("z", []),
                                                         np.atleast_1d(redshifts)))),
                             k_max=max(current.get("k_max", 0), k_max), **v)
-# >>>>>>> master
             elif k == "source_Cl":
                 if k not in self._must_provide:
                     self._must_provide[k] = {}

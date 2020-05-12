@@ -254,6 +254,12 @@ class classy(BoltzmannBase):
                     method="z_of_r",
                     args_names=["z"],
                     args=[np.atleast_1d(v["z"])])
+            elif k == "Cl_sz":
+                self.extra_args["output"] += "tSZ"
+                self.collectors[k] = Collector(
+                    method="cl_sz",
+                    args_names=[],
+                    args=[])
             elif isinstance(k, tuple) and k[0] == "Pk_grid":
                 self.extra_args["output"] += " mPk"
                 v = deepcopy(v)
@@ -266,27 +272,6 @@ class classy(BoltzmannBase):
 
                 if v["nonlinear"] and "non linear" not in self.extra_args:
                     self.extra_args["non linear"] = non_linear_default_code
-# <<<<<<< HEAD
-#                 for pair in v.pop("vars_pairs", [("delta_tot", "delta_tot")]):
-#                     if pair == ("delta_tot", "delta_tot"):
-#                         v["only_clustering_species"] = False
-#                     elif pair == ("delta_nonu", "delta_nonu"):
-#                         v["only_clustering_species"] = True
-#                     else:
-#                         raise LoggedError(self.log, "NotImplemented in CLASS: %r", pair)
-#                     product = ("Pk_grid", v["nonlinear"]) + tuple(pair)
-#                     self.collectors[product] = Collector(
-#                         method="get_pk_and_k_and_z",
-#                         kwargs=v,
-#                         post=(lambda P, k, z: (k, z, np.array(P).T)))
-#             elif k == "Cl_sz":
-#                 self.extra_args["output"] += "tSZ"
-#                 self.collectors[k] = Collector(
-#                     method="cl_sz",
-#                     args_names=[],
-#                     args=[])
-
-# =======
                 pair = k[2:]
                 if pair == ("delta_tot", "delta_tot"):
                     v["only_clustering_species"] = False
