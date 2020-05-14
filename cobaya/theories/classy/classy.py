@@ -254,12 +254,7 @@ class classy(BoltzmannBase):
                     method="z_of_r",
                     args_names=["z"],
                     args=[np.atleast_1d(v["z"])])
-            elif k == "Cl_sz":
-                self.extra_args["output"] += "tSZ"
-                self.collectors[k] = Collector(
-                    method="cl_sz",
-                    args_names=[],
-                    args=[])
+
             elif isinstance(k, tuple) and k[0] == "Pk_grid":
                 self.extra_args["output"] += " mPk"
                 v = deepcopy(v)
@@ -286,11 +281,17 @@ class classy(BoltzmannBase):
             elif isinstance(k, tuple) and k[0] == "sigma_R":
                 raise LoggedError(
                     self.log, "Classy sigma_R not implemented as yet - use CAMB only")
-# >>>>>>> master
             elif v is None:
                 k_translated = self.translate_param(k)
                 if k_translated not in self.derived_extra:
                     self.derived_extra += [k_translated]
+
+            elif k == "Cl_sz":
+                #self.extra_args["output"] = " tSZ_1h"
+                self.collectors[k] = Collector(
+                    method="cl_sz",
+                    args_names=[],
+                    args=[])
             else:
                 raise LoggedError(self.log, "Requested product not known: %r", {k: v})
         # Derived parameters (if some need some additional computations)

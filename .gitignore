@@ -28,3 +28,4 @@ tests/.ipynb_checkpoints
 # pytest
 .cache
 cobaya/theories/.DS_Store
+.DS_Store
