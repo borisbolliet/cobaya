@@ -287,7 +287,7 @@ class classy(BoltzmannBase):
                     self.derived_extra += [k_translated]
 
             elif k == "Cl_sz":
-                #self.extra_args["output"] = " tSZ_1h"
+                self.extra_args["output"] = " tSZ_1h"
                 self.collectors[k] = Collector(
                     method="cl_sz",
                     args_names=[],
