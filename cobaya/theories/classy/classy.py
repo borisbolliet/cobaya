@@ -287,7 +287,6 @@ class classy(BoltzmannBase):
                     self.derived_extra += [k_translated]
 
             elif k == "Cl_sz":
-                #self.extra_args["output"] = " tSZ_1h"
                 self.collectors[k] = Collector(
                     method="cl_sz",
                     args_names=[],
@@ -477,6 +476,7 @@ class classy(BoltzmannBase):
         return cls
 
     def get_Cl_sz(self):
+        cls = {}
         cls = deepcopy(self._current_state["Cl_sz"])
         return cls
 
