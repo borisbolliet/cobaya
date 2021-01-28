@@ -232,6 +232,7 @@ class classy(BoltzmannBase):
                     method="z_of_r",
                     args_names=["z"],
                     args=[np.atleast_1d(v["z"])])
+
             elif isinstance(k, tuple) and k[0] == "Pk_grid":
                 self.extra_args["output"] += " mPk"
                 v = deepcopy(v)
@@ -262,6 +263,12 @@ class classy(BoltzmannBase):
                 k_translated = self.translate_param(k)
                 if k_translated not in self.derived_extra:
                     self.derived_extra += [k_translated]
+
+            elif k == "Cl_sz":
+                self.collectors[k] = Collector(
+                    method="cl_sz",
+                    args_names=[],
+                    args=[])
             else:
                 raise LoggedError(self.log, "Requested product not known: %r", {k: v})
         # Derived parameters (if some need some additional computations)
@@ -440,6 +447,12 @@ class classy(BoltzmannBase):
         if "pp" in cls and ell_factor:
             cls['pp'][2:] *= ells_factor ** 2 * (2 * np.pi)
         return cls
+
+    def get_Cl_sz(self):
+        cls = {}
+        cls = deepcopy(self._current_state["Cl_sz"])
+        return cls
+
 
     def _get_z_dependent(self, quantity, z):
         try:
