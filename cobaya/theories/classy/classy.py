@@ -266,7 +266,7 @@ class classy(BoltzmannBase):
 
             elif k == "Cl_sz":
                 self.collectors[k] = Collector(
-                    method="cl_sz",
+                    method="cl_sz", # this is the function defined in classy.pyx that collects 1 and 2 halo tsz
                     args_names=[],
                     args=[])
             else:
