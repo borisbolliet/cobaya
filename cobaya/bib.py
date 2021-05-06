@@ -15,8 +15,8 @@ from inspect import cleandoc
 
 # Local
 from cobaya.conventions import _yaml_extensions, kinds, _dump_sort_cosmetic
-from cobaya.tools import create_banner, warn_deprecation
-from cobaya.input import load_input, get_used_components, get_class
+from cobaya.tools import create_banner, warn_deprecation, get_class
+from cobaya.input import load_input, get_used_components
 
 # Banner defaults
 _default_symbol = "="
@@ -53,7 +53,7 @@ def get_desc_component(component, kind, info=None):
 def get_bib_component(component, kind):
     cls = get_class(component, kind, None_if_not_found=True)
     if cls:
-        lines = (cls.get_bibtex().lstrip("\n").rstrip("\n")
+        lines = ((cls.get_bibtex() or "").lstrip("\n").rstrip("\n")
                  or "# [no bibliography information found]")
     else:
         lines = "# [Component '%s.%s' not known.]" % (kind, component)
