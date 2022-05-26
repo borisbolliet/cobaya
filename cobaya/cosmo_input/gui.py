@@ -13,11 +13,11 @@ from cobaya.cosmo_input import input_database
 from cobaya.cosmo_input.input_database import _combo_dict_text
 from cobaya.cosmo_input.autoselect_covmat import get_best_covmat, covmat_folders
 from cobaya.cosmo_input.create_input import create_input
-from cobaya.bib import prettyprint_bib, get_bib_info, get_bib_component
+from cobaya.bib import pretty_repr_bib, get_bib_info, get_bib_component
 from cobaya.tools import warn_deprecation, get_available_internal_class_names, \
     cov_to_std_and_corr, resolve_packages_path, sort_cosmetic
 from cobaya.input import get_default_info
-from cobaya.conventions import subfolders, kinds, packages_path_env
+from cobaya.conventions import subfolders, kinds, packages_path_env, packages_path_input
 
 # per-platform settings for correct high-DPI scaling
 if platform.system() == "Linux":
@@ -241,7 +241,7 @@ class MainWindow(QWidget):
             comments_text = ""
         self.display["python"].setText("info = " + pformat(info) + comments_text)
         self.display["yaml"].setText(yaml_dump(sort_cosmetic(info)) + comments_text)
-        self.display["bibliography"].setText(prettyprint_bib(*get_bib_info(info)))
+        self.display["bibliography"].setText(pretty_repr_bib(*get_bib_info(info)))
         # Display covmat
         packages_path = resolve_packages_path()
         if not packages_path:
@@ -249,7 +249,7 @@ class MainWindow(QWidget):
                 "\nIn order to find a covariance matrix, you need to define an external "
                 "packages installation path, e.g. via the env variable %r.\n" %
                 packages_path_env)
-        elif any(not os.path.isdir(d.format(**{"packages_path": packages_path}))
+        elif any(not os.path.isdir(d.format(**{packages_path_input: packages_path}))
                  for d in covmat_folders):
             self.covmat_text.setText(
                 "\nThe external cosmological packages appear not to be installed where "
@@ -317,10 +317,11 @@ class MainWindow(QWidget):
 
     @Slot()
     def copy_clipb(self):
+        clipboard = QApplication.clipboard()
         if self.display_tabs.currentWidget() == self.display["covmat"]:
-            self.clipboard.setText(self.save_covmat_txt())
+            clipboard.setText(self.save_covmat_txt())
         else:
-            self.clipboard.setText(self.display_tabs.currentWidget().toPlainText())
+            clipboard.setText(self.display_tabs.currentWidget().toPlainText())
 
     def show_defaults(self):
         kind, component = self.sender().data()
@@ -390,6 +391,7 @@ def gui_script():
             "PySide2 is not installed! "
             "Check Cobaya's documentation for the cosmo_generator "
             "('Basic cosmology runs').")
+
     clip = app.clipboard()
     window = MainWindow()
     window.clipboard = clip

@@ -4,7 +4,7 @@ Creating your own cosmological likelihood
 Creating your own cosmological likelihood with **cobaya** is super simple. You can either define a likelihood class (see :doc:`cosmo_external_likelihood_class`), or simply create a likelihood function:
 
 #. Define your likelihood as a function that takes some parameters (experimental errors, foregrounds, etc, but **not theory** parameters) and returns a ``log-likelihood``.
-#. Take note of the observables and other cosmological quantities that you will need to request from the theory code (see :func:`~theories.BoltzmannBase.BoltzmannBase.must_provide`). *[If you cannot find the observable that you need, do let us know!]*
+#. Take note of the observables and other cosmological quantities that you will need to request from the theory code (see :func:`~theories.cosmo.BoltzmannBase.must_provide`). *[If you cannot find the observable that you need, do let us know!]*
 #. When declaring the function as a likelihood in **cobaya**'s input, add a field ``requires`` and assign to it all the cosmological requirements as a **dictionary** (e.g. ``{'Cl': {'tt': 2500}}``).
 #. Add to your likelihood function definition a keyword argument ``_self=None``. At run-time, you can call ``get_[...]`` methods of ``_self.provider`` to get the quantities that you requested evaluated at the current parameters values, e.g ``_theory.get_Cl()`` in the example below.
 #. If you wish to define derived paramters, do it as for :ref:`general external likelihoods <likelihood_external>` (example :doc:`here <example_advanced>`): add an ``output_params`` field to the likelihood info listing your derived parameters, and have your function return a tuple ``(log-likelihood, {derived parameters dictionary})``.
@@ -51,7 +51,7 @@ We will define a model, use our likelihood's plotter, and also plot a slice of t
    - Set ``debug: True`` in the input, which will cause **cobaya** to print much more information, e.g. the parameter values are passed to the prior, the theory code and the likelihood.
    - If the likelihood evaluates to ``-inf`` (but the prior is finite) it probably means that either the theory code or the likelihood are failing; to display the error information of the theory code, add to it the ``stop_at_error: True`` option, as shown in the example input above, and the same for the likelihood, if it is likely to throw errors.
 
-Now we can sample from this model's posterior as explained in :ref:`cosmo_model_sampler`.
+Now we can sample from this model's posterior as explained in :ref:`model_sampler_interaction`.
 
 Alternatively, specially if you are planning to share your likelihood, you can put its definition (including the fiducial spectrum, maybe saved as a table separately) in a separate file, say ``my_like_file.py``. In this case, to use it, use ``import_module([your_file_without_extension]).your_function``, here
 

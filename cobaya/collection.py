@@ -11,9 +11,9 @@ import os
 import functools
 import numpy as np
 import pandas as pd
-from getdist import MCSamples, chains
 from copy import deepcopy
-from math import isclose
+from typing import Union, Sequence, Optional
+from getdist import MCSamples, chains  # type: ignore
 
 # Local
 from cobaya.conventions import OutPar, minuslogprior_names, chi2_names, \
@@ -95,9 +95,9 @@ class SampleCollection(BaseCollection):
     (returns a copy, not a view).
 
     Note for developers: when expanding this class or inheriting from it, always access
-    the underlying DataFrame as `self.data` and not `self._data`, to ensure the cache has
-    been dumped. If you really need to access the actual attribute `self._data` in a
-    method, make sure to decorate it with `@ensure_cache_dumped`.
+    the underlying DataFrame as ``self.data`` and not ``self._data``, to ensure the cache
+    has been dumped. If you really need to access the actual attribute ``self._data`` in a
+    method, make sure to decorate it with ``@ensure_cache_dumped``.
     """
 
     def __init__(self, model, output=None, cache_size=_default_cache_size, name=None,
@@ -174,36 +174,38 @@ class SampleCollection(BaseCollection):
     def reset(self):
         """Create/reset the DataFrame."""
         self._cache_reset()
-        self._data = pd.DataFrame(columns=self.columns)
+        self._data = pd.DataFrame(columns=self.columns, dtype=np.float64)
         if getattr(self, "file_name", None):
             self._n_last_out = 0
 
-    def add(self, values, derived=None, weight=1,
-            logpost=None, logpriors=None, loglikes=None):
+    def add(self, values: Union[Sequence[float], np.ndarray],
+            logpost: Optional[Union[LogPosterior, float]] = None,
+            logpriors: Optional[Sequence[float]] = None,
+            loglikes: Optional[Sequence[float]] = None,
+            derived: Optional[Sequence[float]] = None,
+            weight: float = 1):
         """
-        Adds a point to the collection. If `logpost` not given, it is obtained as the sum
-        of `logpriors` and `loglikes` (both optional otherwise).
+        Adds a point to the collection.
+
+        If `logpost` can be :class:`~model.LogPosterior`, float or None (in which case,
+        `logpriors`, `loglikes` are both required).
         """
-        logps = self._check_before_adding(values, logpriors, loglikes, logpost=logpost,
-                                          derived=derived, weight=weight)
-        self._cache_add(values, logps, derived=derived, weight=weight,
-                        logpriors=logpriors, loglikes=loglikes)
+        logposterior = self._check_before_adding(
+            values, logpost=logpost, logpriors=logpriors,
+            loglikes=loglikes, derived=derived, weight=weight)
+        self._cache_add(values, logposterior=logposterior, weight=weight)
 
-    def add_log_posterior(self, values: np.ndarray, results: LogPosterior, weight=1):
-        logprior_sum = sum(results.logpriors)
-        loglike_sum = sum(results.loglikes)
-        assert np.isclose(logprior_sum + loglike_sum, results.logpost)
-        self._cache_add(values, (results.logpost, logprior_sum, loglike_sum),
-                        derived=results.derived, weight=weight,
-                        logpriors=results.logpriors, loglikes=results.loglikes)
-
-    def _check_before_adding(self, values, logpriors, loglikes, logpost=None,
-                             derived=None, weight=None):
+    def _check_before_adding(self, values: Union[Sequence[float], np.ndarray],
+                             logpost: Optional[Union[LogPosterior, float]] = None,
+                             logpriors: Optional[Sequence[float]] = None,
+                             loglikes: Optional[Sequence[float]] = None,
+                             derived: Optional[Sequence[float]] = None,
+                             weight: float = 1
+                             ) -> LogPosterior:
         """
         Checks that the arguments of collection.add are correctly formatted.
 
-        Returns a tuple `(logpost, sum(logpriors), sum(loglikes))`, since it needs to sum
-        log-prior and log-likelihood for testing purposes.
+        Returns a :class:`~model.LogPosterior` dataclass (unchanged if one passed).
         """
         if weight is not None and weight <= 0:
             raise LoggedError(self.log, "Weights must be positive. Got %r", weight)
@@ -216,64 +218,75 @@ class SampleCollection(BaseCollection):
                 raise LoggedError(
                     self.log, "Got %d values for the derived parameters. Should be %d.",
                     len(derived), len(self.derived_params))
-        logpriors_sum = sum(logpriors) if logpriors is not None else None
-        loglikes_sum = sum(loglikes) if loglikes is not None else None
-        try:
-            logpost_sum = logpriors_sum + loglikes_sum  # type: ignore
-            if logpost is None:
-                logpost = logpost_sum
-            else:
-                if not isclose(logpost, logpost_sum):
+        if isinstance(logpost, LogPosterior):
+            # If priors and likes passed, check consistency
+            if logpriors is not None:
+                if not np.allclose(logpriors, logpost.logpriors):
                     raise LoggedError(
-                        self.log, "The given log-posterior is not equal to the "
-                                  "sum of given log-likelihoods and log-priors")
-        except TypeError:  # at least one of logpriors|likes not defined
-            if logpost is None:
-                raise LoggedError(
-                    self.log, "If a log-posterior is not specified, you need to pass "
-                              "a log-likelihood and a log-prior.")
-        return logpost, logpriors_sum, loglikes_sum
+                        self.log,
+                        "logpriors not consistent with LogPosterior object passed.")
+            if loglikes is not None:
+                if not np.allclose(loglikes, logpost.loglikes):
+                    raise LoggedError(
+                        self.log,
+                        "loglikes not consistent with LogPosterior object passed.")
+            if derived is not None:
+                # A simple np.allclose is not enough, because np.allclose([1], []) = True!
+                if len(derived) != len(logpost.derived) or \
+                        not np.allclose(derived, logpost.derived):
+                    raise LoggedError(
+                        self.log,
+                        "derived params not consistent with those of LogPosterior object "
+                        "passed.")
+            return_logpost = logpost
+        elif isinstance(logpost, float) or logpost is None:
+            try:
+                return_logpost = LogPosterior(
+                    logpriors=logpriors, loglikes=loglikes, derived=derived)
+            except ValueError as valerr:
+                # missing logpriors/loglikes if logpost is None,
+                # or inconsistent sum if logpost given
+                raise LoggedError(self.log, str(valerr))
+        else:
+            raise LoggedError(
+                self.log, "logpost must be a LogPosterior object, a number or None (in "
+                          "which case logpriors and loglikes are needed).")
+        return return_logpost
 
     def _cache_reset(self):
         self._cache = np.full((self.cache_size, len(self.columns)), np.nan)
         self._cache_last = -1
 
-    def _cache_add(self, values, logps, derived=None, weight=1, logpriors=None,
-                   loglikes=None):
+    def _cache_add(self, values: Union[Sequence[float], np.ndarray],
+                   logposterior: LogPosterior, weight: float = 1):
         """
         Adds the given point to the cache. Dumps and resets the cache if full.
-
-        `logps` must be a tuple `(logpost, sum(logpriors), sum(loglikes))`, where the last
-        two elements can be `None`.
         """
         if self._cache_last == self.cache_size - 1:
             self._cache_dump()
-        self._cache_add_row(self._cache_last + 1, values, logps, derived=derived,
-                            weight=weight, logpriors=logpriors, loglikes=loglikes)
+        self._cache_add_row(
+            self._cache_last + 1, values, logposterior=logposterior, weight=weight)
         self._cache_last += 1
 
-    def _cache_add_row(self, pos, values, logps, derived=None, weight=1, logpriors=None,
-                       loglikes=None):
+    def _cache_add_row(self, pos: int, values: Union[Sequence[float], np.ndarray],
+                       logposterior: LogPosterior, weight: float = 1):
         """
         Adds the given point to the cache at the given position.
-
-        `logps` must be a tuple `(logpost, sum(logpriors), sum(loglikes))`, where the last
-        two elements can be `None`.
         """
         self._cache[pos, self._icol[OutPar.weight]] = weight if weight is not None else 1
-        self._cache[pos, self._icol[OutPar.minuslogpost]] = -logps[0]
+        self._cache[pos, self._icol[OutPar.minuslogpost]] = -logposterior.logpost
         for name, value in zip(self.sampled_params, values):
             self._cache[pos, self._icol[name]] = value
-        if logpriors is not None:
-            for name, value in zip(self.minuslogprior_names, logpriors):
+        if logposterior.logpriors is not None:
+            for name, value in zip(self.minuslogprior_names, logposterior.logpriors):
                 self._cache[pos, self._icol[name]] = -value
-            self._cache[pos, self._icol[OutPar.minuslogprior]] = - logps[1]
-        if loglikes is not None:
-            for name, value in zip(self.chi2_names, loglikes):
+            self._cache[pos, self._icol[OutPar.minuslogprior]] = - logposterior.logprior
+        if logposterior.loglikes is not None:
+            for name, value in zip(self.chi2_names, logposterior.loglikes):
                 self._cache[pos, self._icol[name]] = -2 * value
-            self._cache[pos, self._icol[OutPar.chi2]] = -2 * logps[2]
-        if derived is not None:
-            for name, value in zip(self.derived_params, derived):
+            self._cache[pos, self._icol[OutPar.chi2]] = -2 * logposterior.loglike
+        if len(logposterior.derived):
+            for name, value in zip(self.derived_params, logposterior.derived):
                 self._cache[pos, self._icol[name]] = value
 
     def _cache_dump(self):
@@ -301,7 +314,7 @@ class SampleCollection(BaseCollection):
         Append another collection.
         Internal method: does not check for consistency!
         """
-        self._data = pd.concat([self.data[:len(self)], collection.data],
+        self._data = pd.concat([self.data, collection.data],
                                ignore_index=True)
 
     def __len__(self):
@@ -317,11 +330,11 @@ class SampleCollection(BaseCollection):
 
     # Make the dataframe printable (but only the filled ones!)
     def __repr__(self):
-        return self.data[:len(self)].__repr__()
+        return self.data.__repr__()
 
     # Make the dataframe iterable over rows
     def __iter__(self):
-        return self.data[:len(self)].iterrows()
+        return self.data.iterrows()
 
     # Accessing the dataframe
     def __getitem__(self, *args):
@@ -363,78 +376,112 @@ class SampleCollection(BaseCollection):
     def to_numpy(self, dtype=None, copy=False) -> np.ndarray:
         return self.data.to_numpy(copy=copy, dtype=dtype or np.float64)
 
-    def _copy(self, data=None) -> 'SampleCollection':
+    def _copy(self, data=None, empty=False) -> 'SampleCollection':
         """
         Returns a copy of the collection.
 
+        If ``empty=True`` (default ``False``), returns an empty copy.
+
         If data specified (default: None), the copy returned contains the given data;
         no checks are performed on given data, so use with care (e.g. use with a slice of
-        `self.data`).
+        ``self.data``).
         """
         current_data = self.data
         if data is None:
             data = current_data
-        # Avoids creating a copy of the data, to save memory
+        # Avoids creating an unnecessary copy of the data, to save memory
         delattr(self, "_data")
         self_copy = deepcopy(self)
         setattr(self, "_data", current_data)
-        setattr(self_copy, "_data", data)
-        setattr(self_copy, "_n", data.last_valid_index() + 1)
+        if empty:
+            self_copy.reset()
+        else:
+            setattr(self_copy, "_data", data.copy())
+            setattr(self_copy, "_n", data.last_valid_index() + 1)
         return self_copy
 
     # Dummy function to avoid exposing `data` kwarg, since no checks are performed on it.
-    def copy(self) -> 'SampleCollection':
+    def copy(self, empty=False) -> 'SampleCollection':
         """
         Returns a copy of the collection.
-        """
-        return self._copy()
 
-    # Statistical computations
-    def mean(self, first=None, last=None, derived=False, pweight=False):
+        If ``empty=True`` (default ``False``), returns an empty copy.
+        """
+        return self._copy(empty=empty)
+
+    def _weights_for_stats(self, first: Optional[int] = None, last: Optional[int] = None,
+                           pweight: bool = False) -> np.ndarray:
+        """
+        Returns weights for computation of statistical quantities such as mean and
+        covariance.
+
+        If ``pweight=True`` (default ``False``) every point is weighted with its
+        probability, and sample weights are ignored (may lead to very inaccurate
+        estimates!).
+        """
+        if pweight:
+            logps = -self[OutPar.minuslogpost][first:last]\
+                .to_numpy(dtype=np.float64, copy=True)
+            logps -= max(logps)
+            weights = np.exp(logps)
+        else:
+            weights = self[OutPar.weight][first:last]\
+                .to_numpy(dtype=np.float64, copy=True)
+        return weights
+
+    def mean(self, first: Optional[int] = None, last: Optional[int] = None,
+             pweight: bool = False, derived: bool = False) -> np.ndarray:
         """
         Returns the (weighted) mean of the parameters in the chain,
         between `first` (default 0) and `last` (default last obtained),
         optionally including derived parameters if `derived=True` (default `False`).
 
-        If `pweight=True` (default `False`) weights every point with its probability.
-        The estimate of the mean in this case is unstable; use carefully.
+        If ``pweight=True`` (default ``False``) every point is weighted with its
+        probability, and sample weights are ignored (may lead to inaccurate
+        estimates!).
         """
-        if pweight:
-            logps = -self[OutPar.minuslogpost][first:last].to_numpy(dtype=np.float64,
-                                                                    copy=True)
-            logps -= max(logps)
-            weights = np.exp(logps)
-        else:
-            weights = self[OutPar.weight][first:last].to_numpy(dtype=np.float64)
+        weights = self._weights_for_stats(first, last, pweight=pweight)
         return np.average(self[list(self.sampled_params) +
                                (list(self.derived_params) if derived else [])]
                           [first:last].to_numpy(dtype=np.float64).T, weights=weights,
                           axis=-1)
 
-    def cov(self, first=None, last=None, derived=False, pweight=False):
+    def cov(self, first: Optional[int] = None, last: Optional[int] = None,
+            pweight: bool = False, derived: bool = False) -> np.ndarray:
         """
         Returns the (weighted) covariance matrix of the parameters in the chain,
         between `first` (default 0) and `last` (default last obtained),
         optionally including derived parameters if `derived=True` (default `False`).
 
-        If `pweight=True` (default `False`) weights every point with its probability.
-        The estimate of the covariance matrix in this case is unstable; use carefully.
+        If ``pweight=True`` (default ``False``) every point is weighted with its
+        probability, and sample weights are ignored (may lead to very inaccurate
+        estimates!).
         """
+        weights = self._weights_for_stats(first, last, pweight=pweight)
         if pweight:
-            logps = -self[OutPar.minuslogpost][first:last].to_numpy(dtype=np.float64,
-                                                                    copy=True)
-            logps -= max(logps)
-            weights = np.exp(logps)
-            kwarg = "aweights"
+            weight_type_kwarg = "aweights"
+        elif np.allclose(np.round(weights), weights):
+            weights = np.round(weights).astype(int)
+            weight_type_kwarg = "fweights"
         else:
-            weights = self[OutPar.weight][first:last].to_numpy(dtype=np.float64)
-            kwarg = "fweights" if np.allclose(np.round(weights), weights) else "aweights"
-        weights_kwarg = {kwarg: weights}
+            weight_type_kwarg = "aweights"
         return np.atleast_2d(np.cov(
             self[list(self.sampled_params) +
                  (list(self.derived_params) if derived else [])][first:last].to_numpy(
                 dtype=np.float64).T,
-            **weights_kwarg))
+            **{weight_type_kwarg: weights}))
+
+    def reweight(self, importance_weights):
+        """
+        Reweights the sample with the given ``importance_weights``.
+
+        This cannot be fully undone (e.g. recovering original integer weights).
+        You may want to call this method on a copy (see :func:`SampleCollection.copy`).
+        """
+        self._cache_dump()
+        self._data[OutPar.weight] *= importance_weights
+        self._data = self.data[self._data.weight > 0].reset_index(drop=True)
+        self._n = self._data.last_valid_index() + 1
 
     def filtered_copy(self, where) -> 'SampleCollection':
         return self._copy(self.data[where].reset_index(drop=True))
@@ -443,9 +490,9 @@ class SampleCollection(BaseCollection):
         if thin == 1:
             return self if inplace else self.copy()
         if thin != int(thin) or thin < 1:
-            raise LoggedError(self.log, "Thin factor must be an positive integer, got %s",
+            raise LoggedError(self.log, "Thin factor must be a positive integer, got %s",
                               thin)
-        from getdist.chains import WeightedSamples, WeightedSampleError
+        from getdist.chains import WeightedSamples, WeightedSampleError  # type: ignore
         thin = int(thin)
         try:
             if hasattr(WeightedSamples, "thin_indices_and_weights"):
@@ -475,7 +522,8 @@ class SampleCollection(BaseCollection):
         """Maximum-a-posteriori (MAP) sample. Returns a copy."""
         return self.data.loc[self.data[OutPar.minuslogpost].idxmin()].copy()
 
-    def sampled_to_getdist_mcsamples(self, first=None, last=None):
+    def sampled_to_getdist_mcsamples(
+        self, first: Optional[int] = None, last: Optional[int] = None) -> MCSamples:
         """
         Basic interface with getdist -- internal use only!
         (For analysis and plotting use `getdist.mcsamples.MCSamplesFromCobaya
@@ -485,20 +533,14 @@ class SampleCollection(BaseCollection):
         # No logging of warnings temporarily, so getdist won't complain unnecessarily
         with NoLogging():
             mcsamples = MCSamples(
-                samples=self.data[:len(self)][names].to_numpy(dtype=np.float64)[
+                samples=self.data[names].to_numpy(dtype=np.float64)[
                         first:last],
-                weights=self.data[:len(self)][OutPar.weight].to_numpy(dtype=np.float64)[
+                weights=self.data[OutPar.weight].to_numpy(dtype=np.float64)[
                         first:last],
-                loglikes=self.data[:len(self)][OutPar.minuslogpost].to_numpy(
+                loglikes=self.data[OutPar.minuslogpost].to_numpy(
                     dtype=np.float64)[first:last],
                 names=names)
         return mcsamples
-
-    def reweight(self, importance_weights):
-        self._cache_dump()
-        self._data[OutPar.weight] *= importance_weights
-        self._data = self.data[self._data.weight > 0].reset_index(drop=True)
-        self._n = self._data.last_valid_index() + 1
 
     # Saving and updating
     def _get_driver(self, method):
@@ -602,9 +644,11 @@ class OneSamplePoint:
         self.output_thin = output_thin
         self._added_weight = 0
 
-    def add(self, values, results: LogPosterior):
+    def add(self, values, logpost: LogPosterior):
         self.values = values
-        self.results = results
+        if not isinstance(logpost, LogPosterior):
+            raise ValueError("`logpost` argument must be LogPosterior instance.")
+        self.results = logpost
         self.weight = 1
 
     @property
@@ -612,7 +656,12 @@ class OneSamplePoint:
         return self.results.logpost
 
     def add_to_collection(self, collection: SampleCollection):
-        """Adds this point at the end of a given collection."""
+        """
+        Adds this point at the end of a given collection.
+
+        It is assumed that both this instance and the collection passed were
+        initialised with the same :class:`model.Model` (no checks are performed).
+        """
         if self.output_thin > 1:
             self._added_weight += self.weight
             if self._added_weight >= self.output_thin:
@@ -622,7 +671,7 @@ class OneSamplePoint:
                 return False
         else:
             weight = self.weight
-        collection.add_log_posterior(self.values, self.results, weight=weight)
+        collection.add(self.values, logpost=self.results, weight=weight)
         return True
 
     def __str__(self):
