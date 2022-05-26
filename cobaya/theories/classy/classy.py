@@ -600,6 +600,8 @@ class classy(BoltzmannBase):
             requested_and_extra["Omega_nu"] = self.classy.Omega_nu
         if "T_cmb" in requested_and_extra:
             requested_and_extra["T_cmb"] = self.classy.T_cmb()
+        if "T_cmb_dcdmsr" in requested_and_extra:
+            requested_and_extra["T_cmb_dcdmsr"] = self.classy.T_cmb_dcdmsr()
         # Get the rest using the general derived param getter
         # No need for error control: classy.get_current_derived_parameters is passed
         # every derived parameter not excluded before, and cause an error, indicating
@@ -628,6 +630,8 @@ class classy(BoltzmannBase):
             ((cls["ell"] + 1) * cls["ell"] / (2 * np.pi))[2:] if ell_factor else 1
         units_factor = self._cmb_unit_factor(
             units, self.current_state['derived_extra']['T_cmb'])
+        # print('T_cmb:', self.current_state['derived_extra']['T_cmb'])
+        # print('units_factor:',units_factor)
         for cl in cls:
             if cl not in ['pp', 'ell']:
                 cls[cl][2:] *= units_factor ** 2 * ells_factor
