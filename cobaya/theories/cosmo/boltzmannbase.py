@@ -437,6 +437,12 @@ class BoltzmannBase(Theory):
         if key in self.current_state:
             return self.current_state[key]
         k, z, pk = self.get_Pk_grid(var_pair=var_pair, nonlinear=nonlinear)
+
+        # print(k.size,z.size,np.shape(pk))
+        # print('min k, min z',np.min(k),np.min(z))
+        # print('max k, max z',np.max(k),np.max(z))
+        # print(np.log(k[1:])-np.log(k[:-1]))
+
         log_p = True
         sign = 1
         if np.any(pk < 0):
@@ -446,6 +452,8 @@ class BoltzmannBase(Theory):
                 log_p = False
         extrapolating = ((extrap_kmax and extrap_kmax > k[-1]) or
                          (extrap_kmin and extrap_kmin < k[0]))
+        # print(extrap_kmax)
+        # exit(0)
         if log_p:
             pk = np.log(sign * pk)
         elif extrapolating:

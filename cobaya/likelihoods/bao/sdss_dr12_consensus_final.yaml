@@ -1,9 +1,9 @@
 # Final (BAO+FS) consensus results, Alam et al. 2016
 # https://arxiv.org/abs/1607.03155
 
-path: null
-measurements_file: bao_data/sdss_DR12Consensus_final.dat
-cov_file: bao_data/final_consensus_covtot_dM_Hz_fsig.txt
+path: /Users/boris/Work/CLASS-SZ/SO-SZ/bao_data/
+measurements_file: /Users/boris/Work/CLASS-SZ/SO-SZ/bao_data/sdss_DR12Consensus_final.dat
+cov_file: /Users/boris/Work/CLASS-SZ/SO-SZ/bao_data/final_consensus_covtot_dM_Hz_fsig.txt
 # Fiducial sound horizon with which data have been stored
 rs_fid: 147.78  # Mpc
 # Aliases for automatic covariance matrix

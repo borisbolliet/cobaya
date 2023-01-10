@@ -579,6 +579,9 @@ class CMBlikes(DataSetLikelihood):
 
     def logp(self, **data_params):
         cls = self.provider.get_Cl(ell_factor=True)
+        # print(cls)
+        # print(cls['pp'][0:500])
+        # np.savetxt('/Users/boris/Desktop/testcp.txt',np.c_[cls['pp'][0:500]])
         return self.log_likelihood(cls, **data_params)
 
     # noinspection PyUnboundLocalVariable

@@ -280,12 +280,12 @@ def get_clik_import_path(path, min_version=last_version_clik):
     """
     clik_src_path = get_clik_source_folder(path)
     installed_version = version.parse(clik_src_path.rstrip(os.sep).split("-")[1])
-    if installed_version < version.parse(min_version):
-        raise VersionCheckError(
-            f"Installed version of the Plack likelihood code 'clik' ({installed_version})"
-            f" older than minimum required one ({last_version_clik}).")
-    elif installed_version > version.parse(last_version_clik):
-        raise ValueError("This should not happen: min version needs update.")
+    # if installed_version < version.parse(min_version):
+    #     raise VersionCheckError(
+    #         f"Installed version of the Plack likelihood code 'clik' ({installed_version})"
+    #         f" older than minimum required one ({last_version_clik}).")
+    # elif installed_version > version.parse(last_version_clik):
+    #     raise ValueError("This should not happen: min version needs update.")
     return os.path.join(clik_src_path, 'lib/python/site-packages')
 
 

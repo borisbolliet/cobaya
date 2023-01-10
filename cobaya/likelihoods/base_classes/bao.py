@@ -230,6 +230,7 @@ class BAO(InstallableLikelihood):
                                                        <= _x <= self.prob_dist_bounds[1]
                                       else -np.inf)
         elif self.grid_file:
+            print('dealing with grid file')
             try:
                 self.grid_data = np.loadtxt(
                     os.path.join(data_file_path, self.grid_file))
@@ -265,6 +266,7 @@ class BAO(InstallableLikelihood):
                 # Make the interpolator (x refers to at, y refers to ap).
                 self.interpolator = RectBivariateSpline(x, y, chi2, kx=3, ky=3)
             elif self.grid_data.shape[1] == 4:
+                # print('treating grid of dim 4')
                 self.use_grid_2d = False
                 self.use_grid_3d = True
                 if not self.observable_3:
@@ -282,11 +284,19 @@ class BAO(InstallableLikelihood):
                 Ny = y.shape[0]
                 Nz = z.shape[0]
 
+                # print('xyz',x,y,z)
+                # print(Nx,Ny,Nz)
+                # print(self.data["observable"])
+
+
                 chi2 = np.reshape(np.log(self.grid_data[:, 3] + 1e-300), [Nx, Ny, Nz])
+                # print('chi2',chi2)
 
                 self.interpolator3D = RegularGridInterpolator((x, y, z), chi2,
                                                               bounds_error=False,
                                                               fill_value=np.log(1e-300))
+                # print('interpolator done',self.interpolator3D)
+                # exit(0)
 
             else:
                 raise LoggedError(
@@ -415,14 +425,47 @@ class BAO(InstallableLikelihood):
             chi2 = float(self.interpolator(x, y)[0])
             return chi2 / 2
         elif self.use_grid_3d:
+            # print('getting 3d result')
+            # print(self.redshift)
+            # exit(0)
             x = self.theory_fun(self.redshift, self.observable_1)
             y = self.theory_fun(self.redshift, self.observable_2)
             z = self.theory_fun(self.redshift, self.observable_3)
-            chi2 = self.interpolator3D(np.array([x, y, z])[:, 0])
+            # print(x,y,z)
+
+            chi2 = self.interpolator3D(np.array([[x], [y], [z[0]]])[:, 0])
+            # chi2 = self.interpolator3D(np.array([x,y,z])[:, 0])
+
+
+            # print('chi2:',chi2)
+            #
+            # exit(0)
+
             return chi2 / 2
         else:
-            theory = np.array([self.theory_fun(z, obs) for z, obs
-                               in zip(self.data["z"], self.data["observable"])]).T[0]
+            theory_arr = []
+            for z, obs in zip(self.data["z"], self.data["observable"]):
+                # print(z,obs)
+
+                # print(np.float(self.theory_fun(z, obs)))
+                theory_arr.append(np.float(self.theory_fun(z, obs)))
+                # print('\n')
+            # exit(0)
+            theory = np.asarray(theory_arr).T
+            # print('theory: ',theory)
+            # theory_corr = np.array([self.theory_fun(z, obs) for z, obs
+            #                    in zip(self.data["z"], self.data["observable"])]).T[0]
+            # print('theory corr: ',theory_corr)
+            # exit(0)
+
+            # print('-------')
+            # for i, (z, obs, theo) in enumerate(
+            #         zip(self.data["z"], self.data["observable"], theory)):
+            #     print("%s at z=%g : %g (theo) ; %g (data)"%(
+            #                    obs, z, theo, self.data.iloc[i, 1]))
+            # print('-------\n')
+            # exit(0)
+
             if self.is_debug():
                 for i, (z, obs, theo) in enumerate(
                         zip(self.data["z"], self.data["observable"], theory)):

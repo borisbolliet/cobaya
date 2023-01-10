@@ -475,6 +475,8 @@ class DES(DataSetLikelihood):
                 weight[:] = dchifac
                 weight[k < 1e-4] = 0
                 weight[k >= PKdelta.kmax] = 0
+                # print(k)
+                # exit(0)
                 tmp[ix, :] = weight * PKdelta.P(self.zs, k, grid=False)
 
         if PKWeyl is not None:

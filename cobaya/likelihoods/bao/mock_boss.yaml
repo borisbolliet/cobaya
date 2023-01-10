@@ -1,0 +1,10 @@
+# Mock BOSS BAO at a fixed known cosmology
+# Mathew Madhavacheril
+
+path: /Users/boris/Work/CLASS-SZ/SO-SZ/bao_data
+measurements_file: /Users/boris/Work/CLASS-SZ/SO-SZ/bao_data/test_boss_mock_bao.txt
+cov_file: /Users/boris/Work/CLASS-SZ/SO-SZ/bao_data/test_boss_mock_bao_covtot.txt
+# Aliases for automatic covariance matrix
+aliases: [BAO]
+# Speed in evaluations/second
+speed: 2000
