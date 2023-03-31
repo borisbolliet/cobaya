@@ -46,10 +46,8 @@ def extract_docs_requirements():
 install_requires = ['numpy>=1.17.0', 'scipy>=1.5', 'pandas>=1.0.1',
                     'PyYAML>=5.1', 'requests>=2.18', 'py-bobyqa>=1.2',
                     'GetDist>=1.3.1', 'fuzzywuzzy>=0.17', 'packaging', 'tqdm',
-                    # 'portalocker>=2.3.0', 
+                    #'portalocker>=2.3.0',
                     'dill>=0.3.3']
-if sys.version_info < (3, 7):
-    install_requires.append('dataclasses>=0.6')
 
 setup(
     name='cobaya',
@@ -72,18 +70,18 @@ setup(
         'Intended Audience :: Science/Research',
         'Topic :: Scientific/Engineering :: Astronomy',
         'License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)',
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
-        'Programming Language :: Python :: 3.9'
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11'
     ],
-    python_requires='>=3.6.1',
+    python_requires='>=3.8.0',
     keywords='montecarlo sampling MCMC cosmology',
     packages=find_packages(exclude=['docs', 'tests']),
     install_requires=install_requires,
     extras_require={
         'test': ['pytest', 'pytest-forked', 'flaky', 'mpi4py'],
-        'gui': ['pyqt5', 'pyside2', 'matplotlib'],
+        'gui': ['pyside6', 'matplotlib'],
         'docs': extract_docs_requirements()},
     package_data={
         'cobaya': list(chain(*[['%s/*/*.yaml' % folder, '%s/*/*.bibtex' % folder]

@@ -20,7 +20,6 @@ from cobaya.conventions import resume_default, Extension, kinds, get_version
 from cobaya.typing import InputDict
 from cobaya.log import LoggedError, HasLogger, get_logger, get_traceback_text
 from cobaya.input import is_equal_info, load_info_dump, split_prefix, get_info_path
-from cobaya.collection import SampleCollection
 from cobaya.tools import deepcopy_where_possible, find_with_regexp, sort_cosmetic, \
     has_non_yaml_reproducible
 from cobaya.component import get_component_class
@@ -147,16 +146,9 @@ class Output(HasLogger):
 
     @mpi.set_from_root(("force", "folder", "prefix", "kind", "ext",
                         "_resuming", "prefix_regexp_str", "log"))
-    def __init__(self, prefix, resume=resume_default, force=False, infix=None,
-                 output_prefix=None):
+    def __init__(self, prefix, resume=resume_default, force=False, infix=None):
         self.name = "output"
         self.set_logger(self.name)
-        # MARKED FOR DEPRECATION IN v3.0
-        # -- also remove output_prefix kwarg above
-        if output_prefix is not None:
-            raise LoggedError(self.log, "`output_prefix` has been deprecated. "
-                                        "Please use `prefix` instead.")
-        # END OF DEPRECATION BLOCK
         self.lock = FileLock()
         self.folder, self.prefix = split_prefix(prefix)
         self.prefix_regexp_str = re.escape(self.prefix) + (
@@ -329,6 +321,9 @@ class Output(HasLogger):
                 # TODO: could probably just compare full infos here, with externals?
                 #  for the moment cautiously keeping old behaviour
                 old_info = yaml_load(yaml_dump(old_info))  # type: ignore
+                if old_info.get("test"):
+                    old_info = None
+            if old_info:
                 new_info = yaml_load(yaml_dump(updated_info_trimmed))
                 if not is_equal_info(old_info, new_info, strict=False,
                                      ignore_blocks=list(ignore_blocks) + [
@@ -385,7 +380,7 @@ class Output(HasLogger):
                 info.pop("debug", None)
                 info.pop("force", None)
                 info.pop("resume", None)
-                # make sure the dumped output_prefix does only contain the file prefix,
+                # make sure the dumped output prefix does only contain the file prefix,
                 # not the folder, since it's already been placed inside it
                 info["output"] = self.updated_prefix()
                 with open(f, "w", encoding="utf-8") as f_out:
@@ -521,6 +516,8 @@ class Output(HasLogger):
         """
         self.check_lock()
         filenames = self.find_collections(name=name, extension=extension)
+        # pylint: disable=import-outside-toplevel
+        from cobaya.collection import SampleCollection
         collections = [
             SampleCollection(model, self, name="%d" % (1 + i), file_name=filename,
                              load=True, onload_skip=skip, onload_thin=thin)
@@ -528,7 +525,7 @@ class Output(HasLogger):
         if concatenate and collections:
             collection = collections[0]
             for collection_i in collections[1:]:
-                collection.append(collection_i)
+                collection._append(collection_i)
             return collection
         return collections
 
@@ -577,11 +574,6 @@ def get_output(*args, **kwargs) -> Output:
     Auxiliary function to retrieve the output driver
     (e.g. whether to get the MPI-wrapped one, or a dummy output driver).
     """
-    # MARKED FOR DEPRECATION IN v3.0
-    if kwargs.get("output_prefix") is not None:
-        raise ValueError("DEPRECATION: `output_prefix` has been deprecated. "
-                         "Please use `prefix` instead.")
-    # END OF DEPRECATION BLOCK
     if kwargs.get("prefix"):
         return Output(*args, **kwargs)
     else:

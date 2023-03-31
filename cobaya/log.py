@@ -168,7 +168,7 @@ def exception_handler(exception_type, exception_instance, trace_back):
             mpi.abort_if_mpi()
         if is_debug(log):
             return  # no traceback printed
-    elif exception_type == mpi.OtherProcessError:
+    elif issubclass(exception_type, mpi.OtherProcessError):
         log.info(str(exception_instance))
         if is_debug(log):
             return  # no traceback printed
@@ -290,6 +290,9 @@ class HasLogger:
 
     def is_debug(self):
         return is_debug(self.log)
+
+    def is_debug_and_mpi_root(self):
+        return is_debug(self.log) and mpi.is_main_process()
 
     @mpi.root_only
     def mpi_warning(self, msg, *args, **kwargs):

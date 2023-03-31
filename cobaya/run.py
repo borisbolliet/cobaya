@@ -66,7 +66,7 @@ def run(info_or_yaml_or_file: Union[InputDict, str, os.PathLike],
         info: InputDict = load_info_overrides(
             info_or_yaml_or_file, override or {}, **flags)
         if info.get("post"):
-            if info.get("minimize"):
+            if info.get("minimize"):  # type: ignore
                 raise ValueError(
                     "``minimize`` option is incompatible with post-processing.")
             if isinstance(output, str) or output is False:
@@ -76,20 +76,17 @@ def run(info_or_yaml_or_file: Union[InputDict, str, os.PathLike],
         if isinstance(output, str) or output is False:
             info["output"] = output or None
         # MARKED FOR DEPRECATION IN v3.2
-        if info.get("debug_file"):
-            print("*WARNING* 'debug_file' will soon be deprecated. If you want to "
-                  "save the debug output to a file, use 'debug: [filename]'.")
-            # BEHAVIOUR TO BE REPLACED BY AN ERROR
-            if info.get("debug"):
-                info["debug"] = info.pop("debug_file")
+        if info.get("debug_file"):  # type: ignore
+            raise LoggedError("'debug_file' has been deprecated. If you want to "
+                              "save the debug output to a file, use 'debug: [filename]'.")
         # END OF DEPRECATION BLOCK
         logger_setup(info.get("debug"))
         logger_run = get_logger(run.__name__)
-        # 1. Prepare output driver, if requested by defining an output_prefix
+        # 1. Prepare output driver, if requested by defining an output prefix
         # GetDist needs to know the original sampler, so don't overwrite if minimizer
         try:
             which_sampler = list(info["sampler"])[0]
-            if info.get("minimize"):
+            if info.get("minimize"):  # type: ignore
                 # Preserve options if "minimize" was already the sampler
                 if which_sampler.lower() != "minimize":
                     info["sampler"] = {"minimize": None}
@@ -200,6 +197,9 @@ def run_script(args=None):
     arguments = parser.parse_args(args)
     info = arguments.input_file
     del arguments.input_file
+    if not info.endswith('.yaml') and not os.path.exists(info):
+        if os.path.exists(info + '.yaml'):
+            info = info + '.yaml'
     run(info, **arguments.__dict__)
 
 

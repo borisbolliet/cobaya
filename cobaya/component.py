@@ -10,10 +10,10 @@ from typing import Optional, Union, List, Set
 from cobaya.log import HasLogger, LoggedError, get_logger
 from cobaya.typing import Any, InfoDict, InfoDictIn, empty_dict
 from cobaya.tools import resolve_packages_path, load_module, get_base_classes, \
-    get_internal_class_component_name, deepcopy_where_possible
-from cobaya.conventions import packages_path_input, kinds, cobaya_package, \
-    reserved_attributes
+    get_internal_class_component_name, deepcopy_where_possible, VersionCheckError
+from cobaya.conventions import kinds, cobaya_package, reserved_attributes
 from cobaya.yaml import yaml_load_file, yaml_dump
+from cobaya.mpi import is_main_process
 
 
 class Timer:
@@ -310,18 +310,10 @@ class CobayaComponent(HasLogger, HasDefaults):
         self._name = name or self.get_qualified_class_name()
         self.packages_path = packages_path or resolve_packages_path()
         # set attributes from the info (from yaml file or directly input dictionary)
+        annotations = self.get_annotations()
         for k, value in info.items():
+            self.validate_info(k, value, annotations)
             try:
-                # MARKED FOR DEPRECATION IN v3.0
-                # NB: cannot ever raise an error, since users may use "path_install" for
-                #     their own purposes. When considered *fully* deprecated, simply
-                #     remove this whole block.
-                if k == "path_install":
-                    self.log.warning(
-                        "*DEPRECATION*: `path_install` will be deprecated "
-                        "in the next version. Please use `packages_path` instead.")
-                    setattr(self, packages_path_input, value)
-                # END OF DEPRECATION BLOCK
                 setattr(self, k, value)
             except AttributeError:
                 raise AttributeError("Cannot set {} attribute for {}!".format(k, self))
@@ -347,7 +339,7 @@ class CobayaComponent(HasLogger, HasDefaults):
 
         :return: name string
         """
-        return self._name
+        return getattr(self, "_name", self.__class__.__name__)
 
     def __repr__(self):
         return self.get_name()
@@ -382,6 +374,22 @@ class CobayaComponent(HasLogger, HasDefaults):
         Whether to track version information for this component
         """
         return True
+
+    def validate_info(self, k: str, value: Any, annotations: dict):
+        """
+        Does any validation on parameter k read from an input dictionary or yaml file,
+        before setting the corresponding class attribute.
+        You could enforce consistency with annotations here, but does not by default.
+
+        :param k: name of parameter
+        :param value: value
+        :param annotations: resolved inherited dictionary of attributes for this class
+        """
+
+        # by default just test booleans, e.g. for typos of "false" which evaluate true
+        if annotations.get(k) is bool and value and isinstance(value, str):
+            raise AttributeError("Class '%s' parameter '%s' should be True "
+                                 "or False, got '%s'" % (self, k, value))
 
     @classmethod
     def get_kind(cls):
@@ -477,7 +485,7 @@ class ComponentNotFoundError(LoggedError):
 
 def get_component_class(name, kind=None, component_path=None, class_name=None,
                         allow_external=True, allow_internal=True, logger=None,
-                        not_found_level=None):
+                        not_found_level=None, min_package_version=None):
     """
     Retrieves the requested component class from its reference name. The name can be a
     fully-qualified package.module.classname string, or an internal name of the particular
@@ -509,6 +517,9 @@ def get_component_class(name, kind=None, component_path=None, class_name=None,
     If ``allow_internal=True`` (default), will first try to load internal components. In
     this case, if ``kind=None`` (default), instead of ``theory|likelihood|sampler``, it
     tries to guess it if the name is unique (slow!).
+
+    If allow_external=True, min_package_version can specify a minimum version of the
+    external package.
     """
     if not isinstance(name, str):
         return name
@@ -536,15 +547,14 @@ def get_component_class(name, kind=None, component_path=None, class_name=None,
         else:
             return getattr(_module, _class_name)
 
-    def return_class(_module_name, package=None):
-        _module: Any = load_module(_module_name, package=package, path=component_path)
+    def return_class(_module_name, **kwargs):
+        _module: Any = load_module(_module_name, path=component_path, **kwargs)
         if not class_name and hasattr(_module, "get_cobaya_class"):
             return _module.get_cobaya_class()
         _class_name = class_name or module_name
-        cls = get_matching_class_name(_module, _class_name, none=True)
-        if not cls:
+        if not (cls := get_matching_class_name(_module, _class_name, none=True)):
             _module = load_module(_module_name + '.' + _class_name,
-                                  package=package, path=component_path)
+                                  path=component_path, **kwargs)
             cls = get_matching_class_name(_module, _class_name)
         if not isinstance(cls, type):
             return get_matching_class_name(cls, _class_name)
@@ -589,7 +599,10 @@ def get_component_class(name, kind=None, component_path=None, class_name=None,
     #    already in step 1).
     if component_path:
         try:
-            return check_kind_and_return(return_class(module_name))
+            return check_kind_and_return(return_class(module_name,
+                                                      min_version=min_package_version))
+        except VersionCheckError:
+            raise
         except Exception as excpt:
             check_if_ComponentNotFoundError_and_raise(
                 excpt, not_found_msg=(_not_found_msg +
@@ -613,14 +626,19 @@ def get_component_class(name, kind=None, component_path=None, class_name=None,
             except Exception as excpt:
                 try:
                     check_if_ComponentNotFoundError_and_raise(
-                        excpt,
-                        not_found_msg=_not_found_msg[:-1] + " as internal component.")
+                        excpt, not_found_msg=_not_found_msg[:-1]
+                                             + (" as internal, trying external."
+                                                if allow_external
+                                                else " as internal component."))
                 except ComponentNotFoundError:
                     pass  # do not raise it yet. try external (if allowed)
     if allow_external:
         try:
             # Now looking in the current folder only (component_path case handled above)
-            return check_kind_and_return(return_class(module_name))
+            return check_kind_and_return(return_class(module_name,
+                                                      min_version=min_package_version))
+        except VersionCheckError:
+            raise
         except Exception as excpt:
             try:
                 check_if_ComponentNotFoundError_and_raise(
@@ -699,7 +717,9 @@ def _bare_load_external_module(name, path=None, min_version=None, reload=False,
         try:
             if get_import_path:
                 import_path = get_import_path(path)
-                logger.debug(f"'{name}' to be imported from (sub)directory {import_path}")
+                if is_main_process():
+                    logger.debug(
+                        f"'{name}' to be imported from (sub)directory {import_path}")
             else:
                 import_path = path
                 if not os.path.exists(import_path):
@@ -771,17 +791,21 @@ def load_external_module(module_name=None, path=None, install_path=None, min_ver
     else:
         msg_tried = "global import (no `path` or Cobaya installation path given)"
     try:
-        logger.debug(f"Attempting {msg_tried}.")
+        if is_main_process():
+            logger.debug(f"Attempting {msg_tried}.")
         module = _bare_load_external_module(not_installed_level="debug", **load_kwargs)
     except ComponentNotInstalledError:
         if default_global:
-            logger.debug("Defaulting to global import.")
+            if is_main_process():
+                logger.debug("Defaulting to global import.")
             load_kwargs["path"] = None
             module = _bare_load_external_module(
                 not_installed_level=not_installed_level, **load_kwargs)
         else:
             raise
     # Check from where was the module actually loaded
-    logger.info(f"`{module_name}` module loaded successfully from "
-                f"{os.path.dirname(os.path.realpath(os.path.abspath(module.__file__)))}")
+    if is_main_process():
+        logger.info(
+            f"`{module_name}` module loaded successfully from "
+            f"{os.path.dirname(os.path.realpath(os.path.abspath(module.__file__)))}")
     return module
