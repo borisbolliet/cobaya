@@ -425,6 +425,7 @@ class BAO(InstallableLikelihood):
     def rs(self):
         return self.provider.get_param("rdrag") * self.rs_rescale
 
+
     def logp(self, **params_values):
         if self.use_grid_2d:
             x = self.theory_fun(self.redshift, self.observable_1)
@@ -432,50 +433,74 @@ class BAO(InstallableLikelihood):
             chi2 = float(self.interpolator(x, y)[0])
             return chi2
         elif self.use_grid_3d:
-            # print('getting 3d result')
-            # print(self.redshift)
-            # exit(0)
             x = self.theory_fun(self.redshift, self.observable_1)
             y = self.theory_fun(self.redshift, self.observable_2)
             z = self.theory_fun(self.redshift, self.observable_3)
-            # print(x,y,z)
-
-            chi2 = self.interpolator3D(np.array([[x], [y], [z[0]]])[:, 0])
-            # chi2 = self.interpolator3D(np.array([x,y,z])[:, 0])
-
-
-            # print('chi2:',chi2)
-            #
-            # exit(0)
-
-            return chi2 
+            chi2 = self.interpolator3D(np.array([x, y, z])[:, 0])
+            return chi2
         else:
-            theory_arr = []
-            for z, obs in zip(self.data["z"], self.data["observable"]):
-                # print(z,obs)
-
-                # print(np.float(self.theory_fun(z, obs)))
-                theory_arr.append(np.float(self.theory_fun(z, obs)))
-                # print('\n')
-            # exit(0)
-            theory = np.asarray(theory_arr).T
-            # print('theory: ',theory)
-            # theory_corr = np.array([self.theory_fun(z, obs) for z, obs
-            #                    in zip(self.data["z"], self.data["observable"])]).T[0]
-            # print('theory corr: ',theory_corr)
-            # exit(0)
-
-            # print('-------')
-            # for i, (z, obs, theo) in enumerate(
-            #         zip(self.data["z"], self.data["observable"], theory)):
-            #     print("%s at z=%g : %g (theo) ; %g (data)"%(
-            #                    obs, z, theo, self.data.iloc[i, 1]))
-            # print('-------\n')
-            # exit(0)
-
+            theory = np.array([self.theory_fun(z, obs) for z, obs
+                               in zip(self.data["z"], self.data["observable"])]).T[0]
             if self.is_debug():
                 for i, (z, obs, theo) in enumerate(
                         zip(self.data["z"], self.data["observable"], theory)):
                     self.log.debug("%s at z=%g : %g (theo) ; %g (data)",
                                    obs, z, theo, self.data.iloc[i, 1])
             return self.logpdf(theory)
+
+    # 
+    # def logp(self, **params_values):
+    #     if self.use_grid_2d:
+    #         x = self.theory_fun(self.redshift, self.observable_1)
+    #         y = self.theory_fun(self.redshift, self.observable_2)
+    #         chi2 = float(self.interpolator(x, y)[0])
+    #         return chi2
+    #     elif self.use_grid_3d:
+    #         # print('getting 3d result')
+    #         # print(self.redshift)
+    #         # exit(0)
+    #         x = self.theory_fun(self.redshift, self.observable_1)
+    #         y = self.theory_fun(self.redshift, self.observable_2)
+    #         z = self.theory_fun(self.redshift, self.observable_3)
+    #         print(x,y,z)
+    #
+    #         ### boris's tweak to run with the current cosmopower wrapper
+    #         chi2 = self.interpolator3D(np.array([[x], [y], [z[0]]])[:, 0])
+    #         # chi2 = self.interpolator3D(np.array([x,y,z])[:, 0])
+    #
+    #
+    #         # print('chi2:',chi2)
+    #         #
+    #         # exit(0)
+    #
+    #         return chi2
+    #     else:
+    #         theory_arr = []
+    #         for z, obs in zip(self.data["z"], self.data["observable"]):
+    #             # print(z,obs)
+    #
+    #             # print(np.float(self.theory_fun(z, obs)))
+    #             theory_arr.append(np.float(self.theory_fun(z, obs)))
+    #             # print('\n')
+    #         # exit(0)
+    #         theory = np.asarray(theory_arr).T
+    #         # print('theory: ',theory)
+    #         # theory_corr = np.array([self.theory_fun(z, obs) for z, obs
+    #         #                    in zip(self.data["z"], self.data["observable"])]).T[0]
+    #         # print('theory corr: ',theory_corr)
+    #         # exit(0)
+    #
+    #         # print('-------')
+    #         # for i, (z, obs, theo) in enumerate(
+    #         #         zip(self.data["z"], self.data["observable"], theory)):
+    #         #     print("%s at z=%g : %g (theo) ; %g (data)"%(
+    #         #                    obs, z, theo, self.data.iloc[i, 1]))
+    #         # print('-------\n')
+    #         # exit(0)
+    #
+    #         if self.is_debug():
+    #             for i, (z, obs, theo) in enumerate(
+    #                     zip(self.data["z"], self.data["observable"], theory)):
+    #                 self.log.debug("%s at z=%g : %g (theo) ; %g (data)",
+    #                                obs, z, theo, self.data.iloc[i, 1])
+    #         return self.logpdf(theory)
